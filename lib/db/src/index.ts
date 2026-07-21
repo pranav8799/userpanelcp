@@ -1,16 +1,15 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
+import { drizzle } from "drizzle-orm/mysql2";
+import mysql from "mysql2/promise";
 import * as schema from "./schema";
 
-const { Pool } = pg;
-
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    "DATABASE_URL must be set. Did you forget to provision a database?",
-  );
+const rawMysqlUrl = process.env.MYSQL_URL;
+if (!rawMysqlUrl) {
+  throw new Error("MYSQL_URL must be set. Point it at the shared MySQL database (mysql://user:pass@host/db).");
 }
+// Strip accidental surrounding quotes that some secret managers add
+const mysqlUrl = rawMysqlUrl.replace(/^["']|["']$/g, "");
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-export const db = drizzle(pool, { schema });
+export const pool = mysql.createPool(mysqlUrl);
+export const db = drizzle(pool, { schema, mode: "default" });
 
 export * from "./schema";

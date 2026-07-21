@@ -3,20 +3,25 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: User Trading Panel API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication
+  - name: account
+    description: Account info
+  - name: trading
+    description: Live trading data and order placement
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +29,239 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/send-otp:
+    post:
+      operationId: sendOtp
+      tags: [auth]
+      summary: Send OTP to mobile number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OtpRequest"
+      responses:
+        "200":
+          description: OTP sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Invalid phone
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/verify-otp:
+    post:
+      operationId: verifyOtp
+      tags: [auth]
+      summary: Verify OTP and receive JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OtpVerify"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout and clear session
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /me:
+    get:
+      operationId: getMe
+      tags: [account]
+      summary: Get logged-in account info
+      responses:
+        "200":
+          description: Account info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /balance:
+    get:
+      operationId: getBalance
+      tags: [trading]
+      summary: Get live wallet balance
+      responses:
+        "200":
+          description: Balance data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Balance"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orders/open:
+    post:
+      operationId: getOpenOrders
+      tags: [trading]
+      summary: Get open orders
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenOrdersFilter"
+      responses:
+        "200":
+          description: Open orders list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderList"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orders/closed:
+    post:
+      operationId: getClosedOrders
+      tags: [trading]
+      summary: Get closed/historical orders
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClosedOrdersFilter"
+      responses:
+        "200":
+          description: Closed orders list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderList"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orders:
+    post:
+      operationId: placeOrder
+      tags: [trading]
+      summary: Place a new order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderInput"
+      responses:
+        "200":
+          description: Order placed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderPlaced"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /positions:
+    get:
+      operationId: getPositions
+      tags: [trading]
+      summary: Get current open positions
+      responses:
+        "200":
+          description: Positions list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PositionList"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /summary:
+    get:
+      operationId: getPnlSummary
+      tags: [trading]
+      summary: Get P&L summary (today / week / month / total)
+      responses:
+        "200":
+          description: P&L summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PnlSummary"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +272,254 @@ components:
       required:
         - status
 
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+      required:
+        - message
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    OtpRequest:
+      type: object
+      properties:
+        phone:
+          type: string
+          description: 10-digit mobile number
+      required:
+        - phone
+
+    OtpVerify:
+      type: object
+      properties:
+        phone:
+          type: string
+        otp:
+          type: string
+      required:
+        - phone
+        - otp
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        account:
+          $ref: "#/components/schemas/AccountInfo"
+      required:
+        - token
+        - account
+
+    AccountInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        maskedMobileNumber:
+          type: string
+        isActive:
+          type: boolean
+      required:
+        - id
+        - name
+        - maskedMobileNumber
+        - isActive
+
+    Balance:
+      type: object
+      properties:
+        availableBalance:
+          type: ["string", "null"]
+        totalBalance:
+          type: ["string", "null"]
+      required:
+        - availableBalance
+        - totalBalance
+
+    Order:
+      type: object
+      properties:
+        orderId:
+          type: ["string", "null"]
+        symbol:
+          type: string
+        side:
+          type: string
+        orderType:
+          type: string
+        quantity:
+          type: ["string", "null"]
+        execQuantity:
+          type: ["string", "null"]
+        price:
+          type: ["string", "null"]
+        triggerPrice:
+          type: ["string", "null"]
+        avgExecutionPrice:
+          type: ["string", "null"]
+        executionFee:
+          type: ["string", "null"]
+        realisedPnl:
+          type: ["string", "null"]
+        reduceOnly:
+          type: ["boolean", "null"]
+        status:
+          type: ["string", "null"]
+        createdAt:
+          type: ["string", "null"]
+      required:
+        - symbol
+        - side
+        - orderType
+
+    OrderList:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+      required:
+        - orders
+
+    OpenOrdersFilter:
+      type: object
+      properties:
+        symbol:
+          type: string
+        limit:
+          type: integer
+
+    ClosedOrdersFilter:
+      type: object
+      properties:
+        symbol:
+          type: string
+        status:
+          type: string
+        fromTime:
+          type: integer
+        toTime:
+          type: integer
+        limit:
+          type: integer
+
+    Position:
+      type: object
+      properties:
+        positionId:
+          type: ["string", "null"]
+        symbol:
+          type: string
+        positionSide:
+          type: ["string", "null"]
+        leverage:
+          type: ["string", "null"]
+        positionSize:
+          type: ["string", "null"]
+        positionValue:
+          type: ["string", "null"]
+        positionMargin:
+          type: ["string", "null"]
+        maintMargin:
+          type: ["string", "null"]
+        avgEntryPrice:
+          type: ["string", "null"]
+        markPrice:
+          type: ["string", "null"]
+        lastPrice:
+          type: ["string", "null"]
+        unrealisedPnl:
+          type: ["string", "null"]
+        liquidationPrice:
+          type: ["string", "null"]
+        marginType:
+          type: ["string", "null"]
+        status:
+          type: ["string", "null"]
+      required:
+        - symbol
+
+    PositionList:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+      required:
+        - positions
+
+    OrderInput:
+      type: object
+      properties:
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [BUY, SELL]
+        order_type:
+          type: string
+          enum: [MARKET, LIMIT, STOP_MARKET, TAKE_PROFIT_MARKET]
+        quantity:
+          type: number
+        price:
+          type: number
+        triggerPrice:
+          type: number
+        reduceOnly:
+          type: boolean
+        timeInForce:
+          type: string
+          enum: [GTC, IOC, FOK]
+        clientOrderId:
+          type: string
+      required:
+        - symbol
+        - side
+        - order_type
+        - quantity
+
+    OrderPlaced:
+      type: object
+      properties:
+        orderId:
+          type: string
+        status:
+          type: string
+      required:
+        - orderId
+        - status
+
+    PnlSummary:
+      type: object
+      properties:
+        todayPnl:
+          type: number
+        weekPnl:
+          type: number
+        monthPnl:
+          type: number
+        totalPnl:
+          type: number
+        tradeCount:
+          type: integer
+      required:
+        - todayPnl
+        - weekPnl
+        - monthPnl
+        - totalPnl
+        - tradeCount

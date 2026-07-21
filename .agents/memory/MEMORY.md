@@ -1,0 +1,2 @@
+- [MySQL URL quoting](mysql-url-quoting.md) — MYSQL_URL stored with surrounding quotes; strip them before passing to mysql2.createPool
+- [MYSQL_URL not DATABASE_URL](mysql-url-env-var.md) — use MYSQL_URL to avoid collision with Replit's auto-managed PostgreSQL DATABASE_URL

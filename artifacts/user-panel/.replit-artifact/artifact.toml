@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "User Trading Panel"
+version = "1.0.0"
+id = "artifacts/user-panel"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18667
+
+[services.development]
+run = "pnpm --filter @workspace/user-panel run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/user-panel", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/user-panel/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18667"
+BASE_PATH = "/"
