@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
-import { useGetMe } from "@workspace/api-client-react";
-import type { AccountInfo } from "@workspace/api-client-react/src/generated/api.schemas";
+import { useGetMe, getGetMeQueryKey, type AccountInfo } from "@workspace/api-client-react";
 import { useLocation } from "wouter";
 
 interface AuthContextType {
@@ -17,29 +16,37 @@ const AuthContext = createContext<AuthContextType>({
   setAccount: () => {},
 });
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [account, setAccount] = useState<AccountInfo | null>(null);
-  const [location, setLocation] = useLocation();
-  
-  const { data, isLoading, error } = useGetMe({
-    query: {
-      retry: false,
-    }
-  });
+const PUBLIC_ROUTES = ['/login', '/signup'];
 
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [account, setAccountState] = useState<AccountInfo | null>(null);
+  const [location, setLocation] = useLocation();
+
+const { data, isLoading, error, refetch } = useGetMe({
+    query: { queryKey: getGetMeQueryKey(), retry: false },
+  });
   useEffect(() => {
     if (data && !error) {
-      setAccount(data);
+      setAccountState(data);
     } else if (error) {
-      setAccount(null);
-      if (location !== '/login') {
-        setLocation('/login');
-      }
+      setAccountState(null);
     }
-  }, [data, error, location, setLocation]);
+  }, [data, error]); // ← only re-derive account from the query itself
+
+  // Separate effect: redirect to /login *only* once we know we're logged out
+useEffect(() => {
+  if (!isLoading && !account && !PUBLIC_ROUTES.includes(location)) {
+    setLocation('/login');
+  }
+}, [isLoading, account, location, setLocation]);
+
+  const setAccount = (acc: AccountInfo) => {
+    setAccountState(acc);
+    void refetch(); // bring the query cache in sync with what we just set
+  };
 
   const clearAuth = () => {
-    setAccount(null);
+    setAccountState(null);
     setLocation('/login');
   };
 

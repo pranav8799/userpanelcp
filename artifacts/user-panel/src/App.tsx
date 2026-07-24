@@ -15,6 +15,7 @@ import PlaceOrder from '@/pages/place-order';
 import Reports from '@/pages/reports';
 import Profile from '@/pages/profile';
 import NotFound from '@/pages/not-found';
+import signup from './pages/signup';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,6 +31,7 @@ function Router() {
     <Shell>
       <Switch>
         <Route path="/login" component={Login} />
+        <Route path="/signup" component={signup} />
         <Route path="/" component={Dashboard} />
         <Route path="/orders" component={Orders} />
         <Route path="/orders/:id" component={OrderDetail} />

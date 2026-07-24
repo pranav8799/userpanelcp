@@ -180,3 +180,77 @@ export interface PnlSummary {
   tradeCount: number;
 }
 
+export type SetLeverageBodyOrderType = "MARKET" | "LIMIT"; // unused placeholder, ignore
+
+export interface LeverageInfo {
+  symbol: string;
+  leverage: string;
+}
+
+export type GetLeverageParams = {
+  symbol: string;
+};
+
+export interface LeverageInput {
+  symbol: string;
+  leverage: number;
+}
+
+export interface MarginInput {
+  symbol: string;
+  margin: number;
+}
+
+export interface CancelAllInput {
+  /** @nullable */
+  symbol?: string | null;
+}
+
+export interface SuccessResponse {
+  success: boolean;
+}
+
+export interface AutoPunchConfig {
+  orderCount: number;
+  stepSize: number;
+  tpPoints: number;
+}
+
+export type WatchedSlotSide = typeof OrderInputSide[keyof typeof OrderInputSide];
+
+export type WatchedSlotStatus =
+  | "pending_fill"
+  | "placing_tp"
+  | "watching"
+  | "repunching";
+
+export interface WatchedSlot {
+  id: string;
+  symbol: string;
+  side: WatchedSlotSide;
+  limitPrice: number;
+  tpPrice: number;
+  quantity: number;
+  repunchCount: number;
+  status: WatchedSlotStatus;
+  /** @nullable */
+  orderId?: string | null;
+  /** @nullable */
+  seenOpen?: boolean | null;
+  /** @nullable */
+  tpOrderId?: string | null;
+  /** @nullable */
+  tpSeenOpen?: boolean | null;
+  /** @nullable */
+  stopped?: boolean | null;
+}
+
+export interface Settings {
+  autoPunchConfig: AutoPunchConfig;
+  watchedSlots: WatchedSlot[];
+}
+
+export interface SettingsUpdate {
+  autoPunchConfig?: AutoPunchConfig;
+  watchedSlots?: WatchedSlot[];
+}

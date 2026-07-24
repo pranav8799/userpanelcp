@@ -1,7 +1,7 @@
 import React from "react";
 import { Link } from "wouter";
 import { useAuth } from "@/contexts/auth-context";
-import { useGetBalance, useGetPnlSummary, useGetClosedOrders, getGetBalanceQueryKey, getGetPnlSummaryQueryKey, getGetClosedOrdersQueryKey } from "@workspace/api-client-react";
+import { useGetBalance, useGetPnlSummary, useGetClosedOrders, getGetBalanceQueryKey, getGetPnlSummaryQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,7 +25,9 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Good morning, {account?.name.split(" ")[0]}</h1>
+          <h1 className="text-2xl font-bold tracking-tight">
+  Good morning, {account?.name?.split(" ")[0] ?? "there"}
+</h1>
           <p className="text-muted-foreground">Here is your trading overview.</p>
         </div>
         <Button 

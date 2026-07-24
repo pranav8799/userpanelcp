@@ -23,17 +23,17 @@ router.get("/", authMiddleware, async (req: Request, res: Response): Promise<voi
   const apiKey = decrypt(account.apiKey);
   const secretKey = decrypt(account.secretKey);
 
+
   const params: Record<string, string> = { exchange: "EXCHANGE_2" };
 
   const data = (await callCoinswitch(
-    "GET",
-    "/trade/api/v2/futures/positions",
-    apiKey,
-    secretKey,
-    params,
-  )) as { data: { positions: unknown[] } };
-
-  const rawPositions = data?.data?.positions ?? [];
+  "GET",
+  "/trade/api/v2/futures/positions",
+  apiKey,
+  secretKey,
+  params,
+)) as { data: unknown[] };
+const rawPositions = data?.data ?? [];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const positions = rawPositions.map((p: any) => ({
@@ -53,7 +53,7 @@ router.get("/", authMiddleware, async (req: Request, res: Response): Promise<voi
     marginType: p.margin_type ?? null,
     status: p.status ?? null,
   }));
-
+  res.set("Cache-Control", "no-store");
   res.json({ positions });
 });
 

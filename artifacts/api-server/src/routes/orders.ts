@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import rateLimit from "express-rate-limit";
 import { authMiddleware } from "../lib/authMiddleware.js";
 import { callCoinswitch, placeOrderForAccount } from "../lib/coinswitchApi.js";
+import { cancelOrderForAccount, cancelAllOrdersForAccount } from "../lib/coinswitchApi.js";
 import { decrypt } from "../lib/crypto.js";
 import type { Request, Response } from "express";
 
@@ -198,5 +199,42 @@ function mapOrder(o: any) {
     createdAt: o.created_at ?? null,
   };
 }
+
+// DELETE /orders/:orderId — cancel a specific order
+router.delete("/:orderId", authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  const { accountId } = req.auth;
+  const orderId = req.params.orderId;
+  if (!orderId || typeof orderId !== "string") { res.status(400).json({ error: "orderId is required" }); return; }
+
+  const account = await getAccountWithKeys(accountId);
+  if (!account) { res.status(404).json({ error: "Account not found" }); return; }
+
+  try {
+    await cancelOrderForAccount(account, orderId);
+    res.json({ success: true });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Cancel failed";
+    req.log.error({ accountId, orderId, error: msg }, "order cancel failed");
+    res.status(500).json({ error: msg });
+  }
+});
+
+// POST /orders/cancel-all — cancel all open orders (optionally filtered by symbol)
+router.post("/cancel-all", authMiddleware, async (req: Request, res: Response): Promise<void> => {
+  const { accountId } = req.auth;
+  const { symbol } = req.body ?? {};
+
+  const account = await getAccountWithKeys(accountId);
+  if (!account) { res.status(404).json({ error: "Account not found" }); return; }
+
+  try {
+    await cancelAllOrdersForAccount(account, symbol);
+    res.json({ success: true });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Cancel all failed";
+    req.log.error({ accountId, error: msg }, "cancel-all failed");
+    res.status(500).json({ error: msg });
+  }
+});
 
 export default router;
