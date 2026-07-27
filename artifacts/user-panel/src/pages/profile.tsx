@@ -482,7 +482,7 @@ export default function Profile() {
       {/* ── Danger zone ──────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle>
+          {/* <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle> */}
         </CardHeader>
         <CardContent className="p-6 pt-0">
           <Button

@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCurrency, formatNumber } from "@/lib/utils";
-import { Link, useSearch } from "wouter";
+import { Link, useSearch, useLocation } from "wouter";
 import { format } from "date-fns";
 import {
   RefreshCw, InboxIcon, Search, X, SlidersHorizontal, Trash2, Play, Pause, Loader2,
@@ -273,10 +273,14 @@ export default function Orders() {
 
       <Tabs value={tab} onValueChange={(v) => goToTab(v as "open" | "repunch")} className="flex-1 flex flex-col">
         <TabsList className="w-full grid grid-cols-2">
-          <TabsTrigger value="open">Open Orders ({openOrders.length})</TabsTrigger>
+
           <TabsTrigger value="repunch">
-            Repunch ({watchedSlots.length})
+            Active Orders ({watchedSlots.length})
           </TabsTrigger>
+          <TabsTrigger value="open">Open Orders ({openOrders.length})</TabsTrigger>
+          {/* <TabsTrigger value="repunch">
+            Active Orders ({watchedSlots.length})
+          </TabsTrigger> */}
         </TabsList>
 
         <TabsContent value="open" className="flex-1 mt-4 space-y-3">
@@ -603,6 +607,8 @@ function OrderList({
   selected?: Set<string>;
   onToggle?: (id: string) => void;
 }) {
+  const [, navigate] = useLocation();
+
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -629,8 +635,11 @@ function OrderList({
         const isSelected = selectable && selected?.has(order.orderId);
 
         return (
-          <Link key={order.orderId} href={`/orders/${order.orderId}`}>
-            <Card className={`transition-colors cursor-pointer active:scale-[0.99] duration-200 ${isSelected ? "border-primary/50 bg-primary/5" : "hover:border-primary/50"}`}>
+          <Card
+            key={order.orderId}
+            onClick={() => navigate(`/orders/${order.orderId}`)}
+            className={`transition-colors cursor-pointer active:scale-[0.99] duration-200 ${isSelected ? "border-primary/50 bg-primary/5" : "hover:border-primary/50"}`}
+          >
               <CardContent className="p-4">
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex items-center gap-2">
@@ -639,7 +648,6 @@ function OrderList({
                         checked={!!isSelected}
                         onCheckedChange={() => onToggle?.(order.orderId)}
                         onClick={(e) => e.stopPropagation()}
-                        onPointerDown={(e) => e.stopPropagation()}
                       />
                     )}
                     <Badge variant={isBuy ? "profit" : "loss"}>{order.side}</Badge>
@@ -682,8 +690,7 @@ function OrderList({
                   </div>
                 </div>
               </CardContent>
-            </Card>
-          </Link>
+          </Card>
         );
       })}
     </div>
