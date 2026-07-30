@@ -18,7 +18,7 @@ interface TickerData {
 }
 
 async function fetchTicker(symbol: string): Promise<TickerData> {
-  const res = await fetch(`/api/market/ticker?symbol=${encodeURIComponent(symbol)}`, {
+  const res = await fetch(`/trade/api/market/ticker?symbol=${encodeURIComponent(symbol)}`, {
     credentials: "include",
   });
   const data = await res.json().catch(() => ({}));
