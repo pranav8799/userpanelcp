@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { repunchStore, useWatchedSlots, useSetWatchedSlots, useAutoPunchEnabled, type WatchedSlot } from "@/lib/repunchStore";
+import { repunchStore, useWatchedSlots, useSetWatchedSlots, type WatchedSlot } from "@/lib/repunchStore";
 import {
   useGetBalance,
   useGetPositions,
@@ -26,9 +26,9 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  RefreshCw, Plus, Trash2, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  ChevronsLeft, ChevronsRight, Zap, AlertTriangle, CheckCircle2, Circle, Loader2,
-  Save, Settings2, Search, Filter, SlidersHorizontal, Pause, Play,
+  RefreshCw, Plus, Trash2, X, ChevronDown, ChevronLeft, ChevronRight,
+  ChevronsLeft, ChevronsRight, AlertTriangle, Loader2,
+  Save, Search, Filter, SlidersHorizontal, Pause, Play,
 } from "lucide-react";
 
 /* ── types ─────────────────────────────────────────────────── */
@@ -49,17 +49,6 @@ interface AutoPunchConfig {
   tpPoints: number;
 }
 
-type OrderStatus = "pending" | "executing" | "success" | "failed";
-
-interface PreviewOrder {
-  index: number;
-  limitPrice: number;
-  tpPrice: number;
-  quantity: number;
-  status: OrderStatus;
-  error?: string;
-}
-
 type ConfirmState =
   | { type: "exit_one"; pos: Position }
   | { type: "exit_selected"; count: number }
@@ -72,6 +61,7 @@ type ConfirmState =
   | { type: "repunch_remove_one"; slotId: string; label: string }
   | { type: "repunch_remove_selected"; count: number }
   | { type: "repunch_clear_all"; count: number }
+  | { type: "save_and_place" }
   | null;
 
 interface PositionFilters { search: string; side: "ALL" | "LONG" | "SHORT"; pnl: "ALL" | "PROFIT" | "LOSS"; }
@@ -84,6 +74,11 @@ const fmt = (v: string | number | null | undefined, decimals = 2) => {
   if (n === null || n === undefined || isNaN(n as number)) return "—";
   return (n as number).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 };
+const fmtINR = (v: number | null | undefined) => {
+  if (v == null || isNaN(v)) return "—";
+  return `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+};
+
 const pnlColor = (v: string | number | null | undefined) => {
   const n = typeof v === "string" ? parseFloat(v) : v;
   if (n == null || isNaN(n) || n === 0) return "text-muted-foreground";
@@ -119,12 +114,12 @@ const slotStatusColor = (slot: WatchedSlot): string => {
   }
 };
 
-const LEVERAGE_PRESETS = [5, 10, 20, 30, 50];
+const LEVERAGE_PRESETS = [10, 15, 20, 25, 30];
 const SYMBOL_OPTIONS = ["XAUUSDT", "XAGUSDT", "BTCUSDT", "ETHUSDT", "CLUSDT"] as const;
-const ORDER_TYPES: { value: OrderInputOrderType; label: string }[] = [
-  { value: "MARKET", label: "Market" },
-  { value: "LIMIT", label: "Limit" },
-];
+// const ORDER_TYPES: { value: OrderInputOrderType; label: string }[] = [
+//   { value: "MARKET", label: "Market" },
+//   { value: "LIMIT", label: "Limit" },
+// ];
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 /* ══════════════ Pagination ══════════════ */
@@ -190,13 +185,6 @@ function PaginationBar({ page, pageSize, totalPages, totalItems, hasPrev, hasNex
   );
 }
 
-function StatusIcon({ status }: { status: OrderStatus }) {
-  if (status === "success") return <CheckCircle2 className="w-3.5 h-3.5" style={{ color: "hsl(162 88% 42%)" }} />;
-  if (status === "failed") return <AlertTriangle className="w-3.5 h-3.5" style={{ color: "hsl(345 88% 58%)" }} />;
-  if (status === "executing") return <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: "hsl(var(--primary))" }} />;
-  return <Circle className="w-3.5 h-3.5 text-muted-foreground" />;
-}
-
 interface FilterChipProps { label: string; value: string; options: { value: string; label: string }[]; onChange: (v: string) => void; activeColor?: string; }
 function FilterChip({ value, options, onChange, activeColor }: FilterChipProps) {
   const isActive = value !== options[0].value;
@@ -243,238 +231,6 @@ function TableToolbar({ searchValue, onSearchChange, searchPlaceholder, filterSl
   );
 }
 
-/* ══════════════ Auto-Punch Drawer (single account) ══════════════ */
-interface AutoPunchDrawerProps {
-  open: boolean; onClose: () => void; side: OrderInputSide; entryPrice: string; quantity: string;
-  onConfigSaved: (cfg: AutoPunchConfig) => void; savedConfig: AutoPunchConfig | undefined;
-  onSlotsCreated?: (slots: WatchedSlot[]) => void;
-}
-function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSaved, savedConfig, onSlotsCreated }: AutoPunchDrawerProps) {
-  const { toast } = useToast();
-  const updateSettingsMut = useUpdateSettings();
-
-  const [orderCount, setOrderCount] = useState(savedConfig?.orderCount ?? 6);
-  const [stepSize, setStepSize] = useState<string>(savedConfig?.stepSize != null ? String(savedConfig.stepSize) : "");
-  const [tpPoints, setTpPoints] = useState<string>(savedConfig?.tpPoints != null ? String(savedConfig.tpPoints) : "");
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [orderStatuses, setOrderStatuses] = useState<Map<number, OrderStatus>>(new Map());
-  const [orderErrors, setOrderErrors] = useState<Map<number, string>>(new Map());
-  const [hasExecuted, setHasExecuted] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [lastSaved, setLastSaved] = useState(false);
-
-  const stepSizeNum = parseFloat(stepSize) || 0;
-  const tpPointsNum = parseFloat(tpPoints) || 0;
-
-  useEffect(() => {
-    if (open) {
-      if (savedConfig) {
-        setOrderCount(savedConfig.orderCount);
-        setStepSize(String(savedConfig.stepSize));
-        setTpPoints(String(savedConfig.tpPoints));
-      } else {
-        setStepSize("");
-        setTpPoints("");
-      }
-      setOrderStatuses(new Map()); setOrderErrors(new Map()); setHasExecuted(false);
-    }
-  }, [open]);
-  useEffect(() => { setLastSaved(false); }, [orderCount, stepSize, tpPoints]);
-
-  const setStatus = (idx: number, status: OrderStatus, error?: string) => {
-    setOrderStatuses((prev) => new Map(prev).set(idx, status));
-    if (error) setOrderErrors((prev) => new Map(prev).set(idx, error));
-  };
-  const resetExecution = () => { setOrderStatuses(new Map()); setOrderErrors(new Map()); setHasExecuted(false); };
-
-  const previewOrders: PreviewOrder[] = useMemo(() => {
-    const entry = parseFloat(entryPrice);
-    const qty = parseFloat(quantity);
-    if (isNaN(entry) || entry <= 0 || isNaN(qty) || qty <= 0 || orderCount < 1 || stepSizeNum <= 0) return [];
-    return Array.from({ length: orderCount }, (_, i) => {
-      const n = i + 1;
-      const limitPrice = side === "BUY" ? entry - stepSizeNum * n : entry + stepSizeNum * n;
-      const tpPrice = side === "BUY" ? limitPrice + tpPointsNum : limitPrice - tpPointsNum;
-      return { index: n, limitPrice, tpPrice, quantity: qty, status: "pending" as OrderStatus };
-    });
-  }, [side, entryPrice, quantity, orderCount, stepSizeNum, tpPointsNum]);
-
-  const doneCount = [...orderStatuses.values()].filter((s) => s === "success" || s === "failed").length;
-  const successCount = [...orderStatuses.values()].filter((s) => s === "success").length;
-  const failedCount = [...orderStatuses.values()].filter((s) => s === "failed").length;
-  const progress = previewOrders.length > 0 ? (doneCount / previewOrders.length) * 100 : 0;
-
-  const entryValid = !isNaN(parseFloat(entryPrice)) && parseFloat(entryPrice) > 0;
-  const qtyValid = !isNaN(parseFloat(quantity)) && parseFloat(quantity) > 0;
-  const canExecute = entryValid && qtyValid && stepSizeNum > 0 && !isExecuting;
-
-  const handleSaveConfig = useCallback(async () => {
-    setIsSaving(true);
-    updateSettingsMut.mutate({ data: { autoPunchConfig: { orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum } } }, {
-      onSuccess: () => { onConfigSaved({ orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum }); setLastSaved(true); setIsSaving(false); toast({ title: "Config saved ✓", description: "These settings are now the default." }); },
-      onError: (err: any) => { setIsSaving(false); toast({ title: "Failed to save config", description: err.message, variant: "destructive" }); },
-    });
-  }, [orderCount, stepSizeNum, tpPointsNum, updateSettingsMut, onConfigSaved, toast]);
-
-  const handleExecute = useCallback(async () => {
-    if (!entryValid || !qtyValid) { toast({ title: "Set a valid price and quantity in the Trade Terminal first", variant: "destructive" }); return; }
-    resetExecution();
-    setIsExecuting(true);
-    let totalOk = 0, totalFailed = 0;
-    const newSlots: WatchedSlot[] = [];
-
-    for (const order of previewOrders) {
-      setStatus(order.index, "executing");
-      try {
-        const result = await placeOrder({
-          symbol: "XAUUSDT", side, order_type: "LIMIT", quantity: order.quantity, price: order.limitPrice,
-        });
-        setStatus(order.index, "success");
-        totalOk++;
-        newSlots.push({
-          id: `XAUUSDT-${side}-${order.limitPrice}-${Date.now()}-${order.index}`,
-          symbol: "XAUUSDT", side, limitPrice: order.limitPrice, tpPrice: order.tpPrice,
-          quantity: order.quantity, repunchCount: 0, status: "pending_fill",
-          orderId: result.orderId, seenOpen: false,
-        });
-      } catch (err: any) {
-        setStatus(order.index, "failed", err?.message ?? "Unknown error");
-        totalFailed++;
-      }
-    }
-
-    setIsExecuting(false);
-    setHasExecuted(true);
-    if (newSlots.length > 0) onSlotsCreated?.(newSlots);
-    toast({
-      title: totalFailed === 0 ? `All ${totalOk} orders punched ✓` : `Completed — ${totalOk} ok, ${totalFailed} failed`,
-      variant: totalFailed === 0 ? "default" : "destructive",
-    });
-  }, [previewOrders, side, entryValid, qtyValid, onSlotsCreated, toast]);
-
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "hsl(var(--background) / 0.7)", backdropFilter: "blur(4px)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="relative flex flex-col rounded-2xl overflow-hidden shadow-2xl" style={{ width: "min(92vw, 700px)", height: "min(90vh, 500px)", border: "1px solid hsl(258 82% 64% / 0.3)", background: "hsl(var(--card))" }}>
-
-        {/* Title bar */}
-        <div className="flex items-center justify-between px-4 py-2.5 shrink-0" style={{ borderBottom: "1px solid hsl(var(--border))", background: "hsl(var(--muted) / 0.3)" }}>
-          <div className="flex items-center gap-2">
-            <Zap className="w-4 h-4 shrink-0" style={{ color: "hsl(var(--primary))" }} />
-            <span className="font-bold text-sm">Auto-Punch</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg transition-colors"
-            style={{ border: "1px solid hsl(345 88% 58% / 0.35)", background: "hsl(345 88% 58% / 0.1)", color: "hsl(345 88% 58%)" }}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="flex flex-1 min-h-0">
-          <div className="w-48 shrink-0 flex flex-col overflow-y-auto p-4 gap-3" style={{ borderRight: "1px solid hsl(var(--border))" }}>
-          <div className="rounded-lg px-3 py-2 space-y-1 text-[11px]" style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">From Trade Terminal</p>
-            <div className="flex justify-between"><span className="text-muted-foreground">Direction</span><span className="font-bold" style={{ color: side === "BUY" ? "hsl(162 88% 42%)" : "hsl(345 88% 58%)" }}>{side === "BUY" ? "▲ BUY" : "▼ SELL"}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Entry Price</span><span className="font-mono font-semibold">{entryPrice || <span className="text-muted-foreground italic">not set</span>}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Base Qty</span><span className="font-mono font-semibold">{quantity || <span className="text-muted-foreground italic">not set</span>}</span></div>
-            {(!entryValid || !qtyValid) && (<p className="text-[10px] mt-1" style={{ color: "hsl(38 92% 45%)" }}>⚠ Set price &amp; quantity in the terminal to punch.</p>)}
-          </div>
-          <div className="border-t border-border" />
-          <div>
-            <div className="flex items-center justify-between mb-1"><label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Number of Orders</label><span className="text-xs font-bold" style={{ color: "hsl(var(--primary))" }}>{orderCount}</span></div>
-            <input type="range" min={1} max={20} value={orderCount} onChange={(e) => { setOrderCount(Number(e.target.value)); resetExecution(); }} className="w-full accent-primary" />
-            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5"><span>1</span><span>20</span></div>
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Step Size (pts)</label>
-            <input
-              className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
-              type="number"
-              min="1"
-              step="1"
-              inputMode="decimal"
-              value={stepSize}
-              onChange={(e) => { setStepSize(e.target.value); resetExecution(); }}
-              placeholder="e.g. 50"
-            />
-            <p className="text-[10px] text-muted-foreground mt-0.5">Limits placed every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry.</p>
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Take Profit (pts)</label>
-            <input
-              className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
-              type="number"
-              min="1"
-              step="1"
-              inputMode="decimal"
-              value={tpPoints}
-              onChange={(e) => { setTpPoints(e.target.value); resetExecution(); }}
-              placeholder="e.g. 100"
-            />
-            <p className="text-[10px] text-muted-foreground mt-0.5">TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts per order.</p>
-          </div>
-          <button onClick={handleSaveConfig} disabled={isSaving || stepSizeNum <= 0} className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
-            style={lastSaved ? { background: "hsl(162 88% 42% / 0.12)", color: "hsl(162 88% 42%)", border: "1px solid hsl(162 88% 42% / 0.3)" } : { background: "hsl(258 82% 64% / 0.1)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.3)" }}>
-            {isSaving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</> : lastSaved ? <><CheckCircle2 className="w-3 h-3" /> Saved ✓</> : <><Save className="w-3 h-3" /> Save as Default</>}
-          </button>
-          <div className="border-t border-border" />
-          <button onClick={handleExecute} disabled={!canExecute} className="w-full py-2.5 rounded-xl font-bold text-sm tracking-wide transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            style={side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff", boxShadow: canExecute ? "0 0 16px hsl(162 88% 42% / 0.35)" : "none" } : { background: "hsl(345 88% 58%)", color: "#fff", boxShadow: canExecute ? "0 0 16px hsl(345 88% 58% / 0.35)" : "none" }}>
-            {isExecuting ? `Punching… (${doneCount}/${previewOrders.length})` : hasExecuted ? "Punch Again" : `Punch ${previewOrders.length} Limit Order${previewOrders.length !== 1 ? "s" : ""}`}
-          </button>
-          {hasExecuted && !isExecuting && (<button onClick={resetExecution} className="w-full py-1.5 rounded-xl text-xs font-semibold" style={{ border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}>Reset Status</button>)}
-        </div>
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {(isExecuting || hasExecuted) && previewOrders.length > 0 && (
-            <div className="shrink-0 px-4 py-2.5 space-y-1.5 pr-12" style={{ borderBottom: "1px solid hsl(var(--border))" }}>
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold">{isExecuting ? "Punching orders…" : "Execution complete"}</span>
-                <span className="text-muted-foreground">
-                  {successCount > 0 && <span style={{ color: "hsl(162 88% 42%)" }}>{successCount} ok</span>}
-                  {successCount > 0 && failedCount > 0 && " · "}
-                  {failedCount > 0 && <span style={{ color: "hsl(345 88% 58%)" }}>{failedCount} failed</span>}
-                </span>
-              </div>
-              <div className="w-full rounded-full overflow-hidden" style={{ height: 3, background: "hsl(var(--muted))" }}>
-                <div className="h-full rounded-full transition-all duration-300" style={{ width: `${progress}%`, background: failedCount > 0 ? "hsl(345 88% 58%)" : "hsl(162 88% 42%)" }} />
-              </div>
-            </div>
-          )}
-          <div className="flex-1 overflow-y-auto">
-            {previewOrders.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-                <Zap className="w-8 h-8 opacity-20" />
-                <p className="text-sm font-medium">No orders to preview</p>
-                <p className="text-xs text-center max-w-xs opacity-70">Enter an entry price, quantity, and step size to preview.</p>
-              </div>
-            ) : previewOrders.map((order, rowIdx) => {
-              const status = orderStatuses.get(order.index) ?? "pending";
-              const errMsg = orderErrors.get(order.index);
-              return (
-                <div key={order.index} className="px-4 py-2 transition-colors" style={{ background: rowIdx % 2 === 0 ? "transparent" : "hsl(var(--muted) / 0.3)", borderBottom: "1px solid hsl(var(--border) / 0.5)" }}>
-                  <div className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: "2rem 1fr 1fr 6rem 6rem" }}>
-                    <span className="font-bold text-muted-foreground">#{order.index}</span>
-                    <span className="font-mono font-bold" style={{ color: side === "BUY" ? "hsl(345 88% 58%)" : "hsl(162 88% 42%)" }}>{fmt(order.limitPrice)}</span>
-                    <div className="flex items-center gap-1"><StatusIcon status={status} /><span className="text-[10px] text-muted-foreground capitalize">{status}</span></div>
-                    <span className="font-mono text-muted-foreground text-[11px]">{fmt(order.tpPrice)}</span>
-                    <span className="font-mono text-muted-foreground text-[11px]">{order.quantity}</span>
-                  </div>
-                  {errMsg && (<p className="mt-1 text-[10px] px-2 py-0.5 rounded w-fit" style={{ background: "hsl(345 88% 58% / 0.1)", color: "hsl(345 88% 58%)" }}>{errMsg}</p>)}
-                </div>
-              );
-            })}
-          </div>
-       </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ══════════════ Confirm Dialog ══════════════ */
 function ConfirmDialog({ state, onConfirm, onCancel }: { state: ConfirmState; onConfirm: () => void; onCancel: () => void }) {
   if (!state) return null;
@@ -490,6 +246,7 @@ function ConfirmDialog({ state, onConfirm, onCancel }: { state: ConfirmState; on
     repunch_remove_one: { title: "Remove From Monitor", desc: state.type === "repunch_remove_one" ? `Remove ${state.label} from the re-punch monitor?` : "", label: "Remove" },
     repunch_remove_selected: { title: "Remove Selected", desc: state.type === "repunch_remove_selected" ? `Remove ${state.count} selected slot${state.count !== 1 ? "s" : ""}?` : "", label: "Remove Selected" },
     repunch_clear_all: { title: "Clear Re-punch Monitor", desc: state.type === "repunch_clear_all" ? `Remove all ${state.count} slot${state.count !== 1 ? "s" : ""}?` : "", label: "Clear All" },
+    save_and_place: { title: "Place Order", desc: "Save this as your default configuration and place the order now?", label: "Yes, Place Order" },
   }[state.type] as { title: string; desc: string; label: string };
 
   return (
@@ -583,7 +340,7 @@ function MobileRepunchModal({
             {totalCount === 0 ? (
               <>
                 <span className="text-sm font-medium">No orders are being watched for re-punch yet.</span>
-                <span className="text-[11px] opacity-70">Enable Auto-punch and take a trade to start monitoring.</span>
+                <span className="text-[11px] opacity-70">Place a trade with orders configured to start monitoring.</span>
               </>
             ) : (
               <>
@@ -640,20 +397,24 @@ export default function PlaceOrder() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
-  const [symbol, setSymbol] = useState("XAUUSDT");
-  const [side, setSide] = useState<OrderInputSide>("BUY");
-  const [orderType, setOrderType] = useState<OrderInputOrderType>("MARKET");
-  const [quantity, setQuantity] = useState("");
-  const [price, setPrice] = useState("");
-  const [leverage, setLeverage] = useState(10);
-  const [tpPrice, setTpPrice] = useState("");
-  const [slPrice, setSlPrice] = useState("");
 
-  const autoPunchEnabled = useAutoPunchEnabled();
-  const setAutoPunchEnabled = repunchStore.setEnabled;
-  const [showAutoPunchDrawer, setShowAutoPunchDrawer] = useState(false);
+  /* ── trade terminal fields (in the order they appear) ── */
+  const [symbol, setSymbol] = useState("XAUUSDT");                 // 1. symbol
+  const [side, setSide] = useState<OrderInputSide>("BUY");         // 2. buy / sell
+  const orderType: OrderInputOrderType = "LIMIT"; // orders are always LIMIT now
+  const [price, setPrice] = useState("");                          // 3. price
+  const [quantity, setQuantity] = useState("");                    // 4. quantity
+  const [leverage, setLeverage] = useState(10);                    // 5. leverage
+  const [numberOfOrders, setNumberOfOrders] = useState("");         // 6. number of orders
+  const [stepSize, setStepSize] = useState("");                    // 7. buy diff (step size)
+  const [takeProfit, setTakeProfit] = useState("");                // 8. take profit (points)
+  // 9. available balance — rendered from useGetBalance()
+  const [usdInrRate, setUsdInrRate] = useState<number>(87.5); // fallback until live rate loads
+
+  const [isSavingDefaults, setIsSavingDefaults] = useState(false);
+  const [defaultsSaved, setDefaultsSaved] = useState(false);
+  const [defaultsLoaded, setDefaultsLoaded] = useState(false);
   const [isPunching, setIsPunching] = useState(false);
-  const [localAutoPunchConfig, setLocalAutoPunchConfig] = useState<AutoPunchConfig | undefined>();
 
   const watchedSlots = useWatchedSlots();
   const setWatchedSlots = useSetWatchedSlots();
@@ -700,105 +461,130 @@ export default function PlaceOrder() {
   const addMarginMut = useAddMargin();
   const updateSettingsMut = useUpdateSettings();
 
+  // Load saved defaults (once) into the terminal fields
   const serverConfig = settings?.autoPunchConfig as AutoPunchConfig | undefined;
-  useEffect(() => { if (serverConfig && !localAutoPunchConfig) setLocalAutoPunchConfig(serverConfig); }, [serverConfig]);
-  const autoPunchConfig = localAutoPunchConfig ?? serverConfig;
+  useEffect(() => {
+    if (serverConfig && !defaultsLoaded) {
+      setNumberOfOrders(String(serverConfig.orderCount));
+      setStepSize(String(serverConfig.stepSize));
+      setTakeProfit(String(serverConfig.tpPoints));
+      setDefaultsLoaded(true);
+    }
+  }, [serverConfig, defaultsLoaded]);
+  useEffect(() => { setDefaultsSaved(false); }, [numberOfOrders, stepSize, takeProfit]);
 
   const getRawBalance = (): number | null => {
     const n = balance?.availableBalance != null ? parseFloat(balance.availableBalance) : null;
     return n != null && !isNaN(n) ? n : null;
   };
 
-  /* ── Auto-Punch execution (single account) ── */
+  useEffect(() => {
+  let cancelled = false;
+  fetch("https://api.exchangerate-api.com/v4/latest/USD")
+    .then((r) => r.json())
+    .then((data) => { if (!cancelled && data?.rates?.INR) setUsdInrRate(data.rates.INR); })
+    .catch(() => {}); // keep fallback rate on failure
+  return () => { cancelled = true; };
+}, []);
+
+  // const handleSaveDefaults = useCallback(() => {
+  //   const cfg: AutoPunchConfig = { orderCount: numberOfOrders, stepSize: parseFloat(stepSize) || 0, tpPoints: parseFloat(takeProfit) || 0 };
+  //   setIsSavingDefaults(true);
+  //   updateSettingsMut.mutate({ data: { autoPunchConfig: cfg } }, {
+  //     onSuccess: () => { setIsSavingDefaults(false); setDefaultsSaved(true); toast({ title: "Defaults saved ✓" }); },
+  //     onError: (err: any) => { setIsSavingDefaults(false); toast({ title: "Failed to save defaults", description: err.message, variant: "destructive" }); },
+  //   });
+  // }, [numberOfOrders, stepSize, takeProfit, updateSettingsMut, toast]);
+
+  /* ── multi-order limit ladder, placed after the entry order fills ── */
   const runAutoPunch = useCallback(async (
-  tradeSymbol: string,
-  tradeSide: OrderInputSide,
-  tradeEntryPrice: number,
-  baseQty: number,
-  cfg: AutoPunchConfig,
-  entryLeg?: { orderId?: string }
-) => {
-  setIsPunching(true);
-  // ... existing toast
+    tradeSymbol: string,
+    tradeSide: OrderInputSide,
+    tradeEntryPrice: number,
+    baseQty: number,
+    cfg: AutoPunchConfig,
+    entryLeg?: { orderId?: string }
+  ) => {
+    setIsPunching(true);
 
-  let totalOk = 0, totalFailed = 0;
-  const newSlots: WatchedSlot[] = [];
+    let totalOk = 0, totalFailed = 0;
+    const newSlots: WatchedSlot[] = [];
 
-  // Entry leg
-  if (entryLeg) {
-    const tp0 = tradeSide === "BUY" ? tradeEntryPrice + cfg.tpPoints : tradeEntryPrice - cfg.tpPoints;
-    newSlots.push({
-      id: `${tradeSymbol}-${tradeSide}-${tradeEntryPrice}-entry-${Date.now()}`,
-      symbol: tradeSymbol,
-      side: tradeSide,
-      limitPrice: tradeEntryPrice,
-      tpPrice: tp0,
-      quantity: baseQty,
-      repunchCount: 0,
-      status: "pending_fill",
-      orderId: entryLeg.orderId,
-      seenOpen: false,
-    });
-  }
-
-  // Limit orders
-  for (let n = 1; n <= cfg.orderCount; n++) {
-    const limitPrice = tradeSide === "BUY" 
-      ? tradeEntryPrice - cfg.stepSize * n 
-      : tradeEntryPrice + cfg.stepSize * n;
-    const tp = tradeSide === "BUY" 
-      ? limitPrice + cfg.tpPoints 
-      : limitPrice - cfg.tpPoints;
-
-    try {
-      const result = await placeOrder({
-        symbol: tradeSymbol,
-        side: tradeSide,
-        order_type: "LIMIT",
-        quantity: baseQty,
-        price: limitPrice,
-      });
-
+    // Entry leg
+    if (entryLeg) {
+      const tp0 = tradeSide === "BUY" ? tradeEntryPrice + cfg.tpPoints : tradeEntryPrice - cfg.tpPoints;
       newSlots.push({
-        id: `${tradeSymbol}-${tradeSide}-${limitPrice}-${Date.now()}-${n}`,
+        id: `${tradeSymbol}-${tradeSide}-${tradeEntryPrice}-entry-${Date.now()}`,
         symbol: tradeSymbol,
         side: tradeSide,
-        limitPrice,
-        tpPrice: tp,
+        limitPrice: tradeEntryPrice,
+        tpPrice: tp0,
         quantity: baseQty,
         repunchCount: 0,
         status: "pending_fill",
-        orderId: result.orderId,
+        orderId: entryLeg.orderId,
         seenOpen: false,
       });
-      totalOk++;
-    } catch (err) {
-      totalFailed++;
-      console.error("Failed to place limit order", err);
     }
-  }
 
-  if (newSlots.length > 0) {
-    setWatchedSlots((prev) => [...prev, ...newSlots]);
-    setRightTab("repunch");
-  }
+    // Limit orders
+    for (let n = 1; n <= cfg.orderCount; n++) {
+      const limitPrice = tradeSide === "BUY"
+        ? tradeEntryPrice - cfg.stepSize * n
+        : tradeEntryPrice + cfg.stepSize * n;
+      const tp = tradeSide === "BUY"
+        ? limitPrice + cfg.tpPoints
+        : limitPrice - cfg.tpPoints;
 
-  setIsPunching(false);
+      try {
+        const result = await placeOrder({
+          symbol: tradeSymbol,
+          side: tradeSide,
+          order_type: "LIMIT",
+          quantity: baseQty,
+          price: limitPrice,
+        });
 
-  toast({
-    title: totalFailed === 0 
-      ? `⚡ Auto-punch complete — ${totalOk} orders` 
-      : `⚡ Done — ${totalOk} ok, ${totalFailed} failed`,
-    variant: totalFailed > 0 ? "destructive" : "default",
-  });
+        newSlots.push({
+          id: `${tradeSymbol}-${tradeSide}-${limitPrice}-${Date.now()}-${n}`,
+          symbol: tradeSymbol,
+          side: tradeSide,
+          limitPrice,
+          tpPrice: tp,
+          quantity: baseQty,
+          repunchCount: 0,
+          status: "pending_fill",
+          orderId: result.orderId,
+          seenOpen: false,
+        });
+        totalOk++;
+      } catch (err) {
+        totalFailed++;
+        console.error("Failed to place limit order", err);
+      }
+    }
 
-  void refetchOrders();
-}, [toast, setWatchedSlots, refetchOrders /* other deps */]);
+    if (newSlots.length > 0) {
+      setWatchedSlots((prev) => [...prev, ...newSlots]);
+      setRightTab("repunch");
+    }
+
+    setIsPunching(false);
+
+    toast({
+      title: totalFailed === 0
+        ? `⚡ ${totalOk} order${totalOk !== 1 ? "s" : ""} placed`
+        : `⚡ Done — ${totalOk} ok, ${totalFailed} failed`,
+      variant: totalFailed > 0 ? "destructive" : "default",
+    });
+
+    void refetchOrders();
+  }, [toast, setWatchedSlots, refetchOrders]);
 
   /* ── execute main order ── */
   const handleExecute = useCallback(async () => {
     if (!symbol.trim() || !quantity) { toast({ title: "Symbol and quantity required", variant: "destructive" }); return; }
-    if (orderType !== "MARKET" && !price) { toast({ title: "Price required for limit orders", variant: "destructive" }); return; }
+    if (!price) { toast({ title: "Price is required", variant: "destructive" }); return; }
 
     const baseQty = parseFloat(quantity);
     setIsExecuting(true);
@@ -806,7 +592,7 @@ export default function PlaceOrder() {
     try {
       result = await placeOrder({
         symbol: symbol.toUpperCase(), side, order_type: orderType, quantity: baseQty,
-        price: orderType !== "MARKET" && price ? parseFloat(price) : undefined,
+        price: parseFloat(price),
       });
       toast({ title: "Order Executed ✓" });
     } catch (err: any) {
@@ -814,26 +600,40 @@ export default function PlaceOrder() {
     }
     setIsExecuting(false);
 
-    if (result && (tpPrice || slPrice)) {
-      if (tpPrice) {
-        try { await placeOrder({ symbol: symbol.toUpperCase(), side: side === "BUY" ? "SELL" : "BUY", order_type: "TAKE_PROFIT_MARKET", quantity: 0, triggerPrice: parseFloat(tpPrice), reduceOnly: true }); } catch {}
-      }
-      if (slPrice) {
-        try { await placeOrder({ symbol: symbol.toUpperCase(), side: side === "BUY" ? "SELL" : "BUY", order_type: "STOP_MARKET", quantity: 0, triggerPrice: parseFloat(slPrice), reduceOnly: true }); } catch {}
-      }
-    }
+    const orderCount = parseInt(numberOfOrders) || 0;
+    const stepSizeNum = parseFloat(stepSize) || 0;
+    const tpPointsNum = parseFloat(takeProfit) || 0;
 
-    if (result && autoPunchEnabled && autoPunchConfig) {
+    if (result && orderCount >= 1 && stepSizeNum > 0) {
       const ep = price ? parseFloat(price) : null;
       if (!ep || isNaN(ep)) {
-        toast({ title: "⚡ Auto-punch skipped", description: "Enter a price so the puncher knows where to place limit orders.", variant: "destructive" });
+        toast({ title: "Ladder skipped", description: "Enter a price so the ladder knows where to place limit orders.", variant: "destructive" });
       } else {
-        void runAutoPunch(symbol.toUpperCase(), side, ep, baseQty, autoPunchConfig, { orderId: result.orderId });
+        void runAutoPunch(symbol.toUpperCase(), side, ep, baseQty, { orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum }, { orderId: result.orderId });
       }
     }
     void refetchOrders();
     void refetchPositions();
-  }, [symbol, quantity, price, side, orderType, tpPrice, slPrice, autoPunchEnabled, autoPunchConfig, runAutoPunch, toast, refetchOrders, refetchPositions]);
+  }, [symbol, quantity, price, side, orderType, numberOfOrders, stepSize, takeProfit, runAutoPunch, toast, refetchOrders, refetchPositions]);
+
+  const handleSaveDefaults = useCallback(() => {
+  const cfg: AutoPunchConfig = { orderCount: parseInt(numberOfOrders) || 0, stepSize: parseFloat(stepSize) || 0, tpPoints: parseFloat(takeProfit) || 0 };
+  setIsSavingDefaults(true);
+  updateSettingsMut.mutate({ data: { autoPunchConfig: cfg } }, {
+    onSuccess: () => {
+      setIsSavingDefaults(false);
+      setDefaultsSaved(true);
+      toast({ title: "Defaults saved ✓" });
+      void handleExecute();
+    },
+    onError: (err: any) => {
+      setIsSavingDefaults(false);
+      toast({ title: "Failed to save defaults", description: err.message, variant: "destructive" });
+    },
+  });
+}, [numberOfOrders, stepSize, takeProfit, updateSettingsMut, toast, handleExecute]);
+
+
 
   /* ── leverage ── */
   const handleSetLeverage = useCallback(() => {
@@ -960,6 +760,7 @@ export default function PlaceOrder() {
     else if (confirmState.type === "repunch_remove_one") removeSlot(confirmState.slotId);
     else if (confirmState.type === "repunch_remove_selected") removeSlots(selectedSlots);
     else if (confirmState.type === "repunch_clear_all") setWatchedSlots([]);
+    else if (confirmState.type === "save_and_place") handleSaveDefaults();
   }, [confirmState, doExitPosition, doExitSelected, doExitAll, doCancelAll, doCancelSelected, handleCancelOrder, setSlotsStopped, removeSlot, removeSlots, selectedSlots, setWatchedSlots]);
 
   /* ── multi-order ── */
@@ -1066,14 +867,25 @@ export default function PlaceOrder() {
     { key: "repunch", label: "Re-punch Monitor", count: watchedSlots.length, filtered: filteredSlots.length },
   ];
 
+  const stepSizeNum = parseFloat(stepSize) || 0;
+const tpPointsNum = parseFloat(takeProfit) || 0;
+const numberOfOrdersNum = parseInt(numberOfOrders) || 0;
+const willLadder = stepSizeNum > 0 && numberOfOrdersNum >= 1;
+const totalLegs = willLadder ? 1 + numberOfOrdersNum : 1;
+const marginPerOrder = calcMargin(quantity, price, leverage);
+const requiredMargin = marginPerOrder != null ? marginPerOrder * totalLegs : null;
+const rawBalance = getRawBalance();
+const insufficientMargin = requiredMargin != null && rawBalance != null && requiredMargin > rawBalance;
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex flex-1 min-h-0 flex-col md:flex-row overflow-y-auto md:overflow-hidden">
-        {/* LEFT PANEL */}
+        {/* LEFT PANEL — Trade Terminal */}
         <div className="w-full md:w-80 md:shrink-0 flex flex-col overflow-y-auto" style={{ borderRight: "1px solid hsl(var(--border))" }}>
           <div className="p-4 pb-8 flex flex-col gap-3">
+
+            {/* 1. Symbol */}
             <div>
-              {/* <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Symbol</label> */}
+              <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Symbol</label>
               <div className="relative">
                 <select value={symbol} onChange={(e) => setSymbol(e.target.value)}
                   className="w-full appearance-none rounded-lg px-3 py-2.5 pr-9 text-sm font-bold uppercase tracking-wider bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors cursor-pointer">
@@ -1083,6 +895,7 @@ export default function PlaceOrder() {
               </div>
             </div>
 
+            {/* 2. Buy / Sell */}
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => setSide("BUY")} className="py-3 rounded-xl font-bold text-sm tracking-wide transition-all"
                 style={side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff", boxShadow: "0 0 20px hsl(162 88% 42% / 0.35)" } : { border: "1px solid hsl(162 88% 42% / 0.35)", color: "hsl(162 88% 48%)", background: "hsl(162 88% 42% / 0.06)" }}>▲ BUY / LONG</button>
@@ -1090,31 +903,28 @@ export default function PlaceOrder() {
                 style={side === "SELL" ? { background: "hsl(345 88% 58%)", color: "#fff", boxShadow: "0 0 20px hsl(345 88% 58% / 0.35)" } : { border: "1px solid hsl(345 88% 58% / 0.35)", color: "hsl(345 88% 64%)", background: "hsl(345 88% 58% / 0.06)" }}>▼ SELL / SHORT</button>
             </div>
 
-            <div className="flex gap-1 p-1 rounded-lg" style={{ background: "hsl(var(--muted))" }}>
+            {/* <div className="flex gap-1 p-1 rounded-lg" style={{ background: "hsl(var(--muted))" }}>
               {ORDER_TYPES.map((ot) => (
                 <button key={ot.value} onClick={() => setOrderType(ot.value)} className="flex-1 py-1.5 text-xs font-semibold rounded-md transition-all"
                   style={orderType === ot.value ? { background: "hsl(var(--card))", color: "hsl(var(--foreground))" } : { color: "hsl(var(--muted-foreground))" }}>{ot.label}</button>
               ))}
-            </div>
+            </div> */}
 
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">
-                Price (USDT){autoPunchEnabled && <span className="ml-1" style={{ color: "hsl(258 82% 60%)" }}>· auto-punch entry</span>}
-              </label>
-              <input className="w-full rounded-lg px-3 py-2.5 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="0" step="any" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" />
-              {autoPunchEnabled && autoPunchConfig && (<p className="text-[10px] mt-1" style={{ color: "hsl(258 82% 60%)" }}>⚡ Will punch {autoPunchConfig.orderCount} limits from this price after trade.</p>)}
-            </div>
+            {/* 3. Price */}
+            {/* 3 & 4. Price + Quantity */}
+<div className="grid grid-cols-2 gap-2">
+  <div>
+    <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Price (USDT)</label>
+    <input className="w-full rounded-lg px-3 py-2.5 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="0" step="any" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" />
+  </div>
+  <div>
+    <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Quantity</label>
+    <input className="w-full rounded-lg px-3 py-2.5 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="0" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="0.00" />
+  </div>
+</div>
+{stepSizeNum > 0 && numberOfOrdersNum > 0 && (<p className="text-[10px] -mt-2" style={{ color: "hsl(258 82% 60%)" }}>⚡ Will ladder {numberOfOrdersNum} limit{numberOfOrdersNum !== 1 ? "s" : ""} from this price after entry.</p>)}
 
-            <div>
-              <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Quantity</label>
-              <input className="w-full rounded-lg px-3 py-2.5 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="0" step="any" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="0.00" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <input className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring" type="number" step="any" value={tpPrice} onChange={(e) => setTpPrice(e.target.value)} placeholder="TP price" />
-              <input className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring" type="number" step="any" value={slPrice} onChange={(e) => setSlPrice(e.target.value)} placeholder="SL price" />
-            </div>
-
+            {/* 5. Leverage */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Leverage</label>
@@ -1132,23 +942,45 @@ export default function PlaceOrder() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold">Auto-punch Limits</span>
-                  <button onClick={() => setShowAutoPunchDrawer(true)} className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium transition-all"
-                    style={{ background: "hsl(258 82% 64% / 0.1)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.25)" }}><Settings2 className="w-3 h-3" />Edit</button>
-                </div>
-                {autoPunchEnabled && autoPunchConfig && (<p className="text-[10px] text-muted-foreground mt-0.5">{autoPunchConfig.orderCount} orders · {autoPunchConfig.stepSize} pt step · {autoPunchConfig.tpPoints} pt TP</p>)}
-                {!autoPunchConfig && (<p className="text-[10px] text-muted-foreground mt-0.5">Configure before enabling.</p>)}
-              </div>
-              <button onClick={() => { if (!autoPunchConfig && !autoPunchEnabled) setShowAutoPunchDrawer(true); else setAutoPunchEnabled(!autoPunchEnabled); }}
-                className="relative shrink-0 w-10 h-5 rounded-full transition-colors duration-200" style={{ background: autoPunchEnabled ? "hsl(258 82% 64%)" : "hsl(var(--muted))" }}>
-                <span className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 shadow-sm" style={{ transform: autoPunchEnabled ? "translateX(20px)" : "translateX(0)" }} />
-              </button>
-            </div>
+            <div className="border-t border-border" />
 
-            {autoPunchEnabled && watchedSlots.length > 0 && (
+            {/* 6. Number of Orders */}
+            <div>
+  <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Number of Orders</label>
+  <input
+    className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+    type="number" min="0" step="1" inputMode="numeric" value={numberOfOrders}
+    onChange={(e) => setNumberOfOrders(e.target.value)} placeholder="e.g. 6" />
+</div>
+
+            {/* 7. Buy Diff (step size) */}
+            {/* 7 & 8. Buy Diff + Take Profit */}
+<div className="grid grid-cols-2 gap-2">
+  <div>
+    <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Buy Diff (pts)</label>
+    <input
+      className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+      type="number" min="0" step="1" inputMode="decimal" value={stepSize}
+      onChange={(e) => setStepSize(e.target.value)} placeholder="e.g. 50" />
+  </div>
+  <div>
+    <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Take Profit (pts)</label>
+    <input
+      className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+      type="number" min="0" step="1" inputMode="decimal" value={takeProfit}
+      onChange={(e) => setTakeProfit(e.target.value)} placeholder="e.g. 100" />
+  </div>
+</div>
+<p className="text-[10px] text-muted-foreground -mt-2">
+  Limits every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry · TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts.
+</p>
+
+            {/* <button onClick={() => setConfirmState({ type: "save_and_place" })} disabled={isSavingDefaults} className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+              style={defaultsSaved ? { background: "hsl(162 88% 42% / 0.12)", color: "hsl(162 88% 42%)", border: "1px solid hsl(162 88% 42% / 0.3)" } : { background: "hsl(258 82% 64% / 0.1)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.3)" }}>
+              {isSavingDefaults ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</> : defaultsSaved ? <><Save className="w-3 h-3" /> Saved ✓</> : <><Save className="w-3 h-3" /> Save as Default</>}
+            </button> */}
+
+            {watchedSlots.length > 0 && (
               <button
                 onClick={() => {
                   setRightTab("repunch");
@@ -1169,14 +1001,45 @@ export default function PlaceOrder() {
               </button>
             )}
 
-            <div className="rounded-xl p-3 text-xs" style={{ border: "1px solid hsl(var(--border))" }}>
-              <div className="flex justify-between"><span className="text-muted-foreground">Available Balance</span><span className="font-mono font-semibold">{balance?.availableBalance ? `${fmt(balance.availableBalance)} USDT` : "—"}</span></div>
-            </div>
+            <div className="border-t border-border" />
+
+            {/* 9. Available Balance */}
+            {/* Margin Required + Available Balance */}
+<div className="rounded-xl p-3 text-xs space-y-2" style={{ border: `1px solid ${insufficientMargin ? "hsl(345 88% 58% / 0.4)" : "hsl(var(--border))"}` }}>
+  <div>
+    <div className="flex justify-between items-baseline">
+      <span className="text-muted-foreground">Margin Required{willLadder ? ` (${totalLegs} orders)` : ""}</span>
+      <span className="font-mono font-semibold" style={insufficientMargin ? { color: "hsl(345 88% 58%)" } : undefined}>
+        {requiredMargin != null ? `${fmt(requiredMargin)} USDT` : "—"}
+      </span>
+    </div>
+    <div className="flex justify-end">
+      <span className="font-mono text-[10px] text-muted-foreground">
+        {requiredMargin != null ? fmtINR(requiredMargin * usdInrRate) : ""}
+      </span>
+    </div>
+  </div>
+  <div className="border-t border-border" />
+  <div>
+    <div className="flex justify-between items-baseline">
+      <span className="text-muted-foreground">Available Balance</span>
+      <span className="font-mono font-semibold">{rawBalance != null ? `${fmt(rawBalance)} USDT` : "—"}</span>
+    </div>
+    <div className="flex justify-end">
+      <span className="font-mono text-[10px] text-muted-foreground">
+        {rawBalance != null ? fmtINR(rawBalance * usdInrRate) : ""}
+      </span>
+    </div>
+  </div>
+  {insufficientMargin && (
+    <p className="text-[10px]" style={{ color: "hsl(345 88% 58%)" }}>⚠ Required margin exceeds available balance.</p>
+  )}
+</div>  
 
             <div className="space-y-2 pt-1">
               <button onClick={handleExecute} disabled={isExecuting} className="w-full py-3 rounded-xl font-bold text-sm tracking-wide transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 style={side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff", boxShadow: "0 0 16px hsl(162 88% 42% / 0.3)" } : { background: "hsl(345 88% 58%)", color: "#fff", boxShadow: "0 0 16px hsl(345 88% 58% / 0.3)" }}>
-                {isExecuting ? "Executing…" : `${side} ${symbol}`}
+                {isExecuting ? "Executing…" : isPunching ? "Laddering…" : `${side} ${symbol}`}
               </button>
             </div>
           </div>
@@ -1366,7 +1229,7 @@ export default function PlaceOrder() {
                 <tbody>
                   {filteredSlots.length === 0 ? (
                     <tr><td colSpan={8} className="text-center py-16 text-muted-foreground">
-                      {watchedSlots.length === 0 ? (<div className="flex flex-col items-center gap-2"><RefreshCw className="w-6 h-6 opacity-30" /><span>No orders are being watched for re-punch yet.</span><span className="text-[11px] opacity-70">Enable Auto-punch and take a trade to start monitoring.</span></div>) : (<div className="flex flex-col items-center gap-2"><Filter className="w-6 h-6 opacity-30" /><span>No slots match your filters</span><button onClick={clearRepunchFilters} className="text-xs font-semibold underline underline-offset-2" style={{ color: "hsl(var(--primary))" }}>Clear filters</button></div>)}
+                      {watchedSlots.length === 0 ? (<div className="flex flex-col items-center gap-2"><RefreshCw className="w-6 h-6 opacity-30" /><span>No orders are being watched for re-punch yet.</span><span className="text-[11px] opacity-70">Place a trade with orders configured to start monitoring.</span></div>) : (<div className="flex flex-col items-center gap-2"><Filter className="w-6 h-6 opacity-30" /><span>No slots match your filters</span><button onClick={clearRepunchFilters} className="text-xs font-semibold underline underline-offset-2" style={{ color: "hsl(var(--primary))" }}>Clear filters</button></div>)}
                     </td></tr>
                   ) : repunchPagination.paged.map((slot, idx) => {
                     const isSlotSelected = selectedSlots.has(slot.id);
@@ -1404,11 +1267,6 @@ export default function PlaceOrder() {
         </div>
       </div>
 
-      <AutoPunchDrawer
-        open={showAutoPunchDrawer} onClose={() => setShowAutoPunchDrawer(false)} side={side} entryPrice={price} quantity={quantity}
-        onConfigSaved={(cfg) => { setLocalAutoPunchConfig(cfg); setAutoPunchEnabled(true); }} savedConfig={autoPunchConfig}
-        onSlotsCreated={(slots) => { setWatchedSlots((prev) => [...prev, ...slots]); setRightTab("repunch"); setLocation("/orders?tab=repunch"); void refetchOrders(); }}
-      />
       <ConfirmDialog state={confirmState} onConfirm={handleConfirm} onCancel={() => setConfirmState(null)} />
     </div>
   );

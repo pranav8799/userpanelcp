@@ -277,7 +277,7 @@ export default function Orders() {
         <TabsList className="w-full grid grid-cols-2">
 
           <TabsTrigger value="repunch">
-            Active Orders ({watchedSlots.length})
+            Auto Trade ({watchedSlots.length})
           </TabsTrigger>
           <TabsTrigger value="open">Open Orders ({openOrders.length})</TabsTrigger>
           {/* <TabsTrigger value="repunch">
@@ -794,7 +794,7 @@ function RepunchList({
           <RefreshCw className="w-10 h-10 text-muted-foreground mb-3 opacity-40" />
           {totalCount === 0 ? (
             <>
-              <p className="text-sm font-medium">No orders are being watched for re-punch yet.</p>
+              <p className="text-sm font-medium">No orders are being watched for re- traded yet.</p>
               <p className="text-xs text-muted-foreground max-w-[260px]">Enable Auto-punch and take a trade to start monitoring.</p>
             </>
           ) : (
@@ -845,7 +845,7 @@ function RepunchList({
 
               <div className="flex items-center justify-between">
                 <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={slot.repunchCount > 0 ? { background: "hsl(162 88% 42% / 0.15)", color: "hsl(162 88% 42%)" } : { background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))" }}>
-                  {slot.repunchCount === 0 ? "No re-punches yet" : `♻ ×${slot.repunchCount} re-punched`}
+                  {slot.repunchCount === 0 ? "0 repeat yet" : `♻ ×${slot.repunchCount} re-punched`}
                 </span>
                 <div className="flex gap-1.5">
                   <button
