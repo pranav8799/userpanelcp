@@ -15,6 +15,7 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { Form, FormControl, FormField, FormItem, FormMessage, FormLabel, FormDescription } from "@/components/ui/form";
 import { Loader2, LogOut, ShieldCheck, User, Pencil, X, Check, Phone } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { DoubleConfirmDialog } from "@/components/double-confirm-dialog";
 
 // ── helpers ────────────────────────────────────────────────────────────
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -74,6 +75,7 @@ export default function Profile() {
   const logout = useLogout();
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const [editingDetails, setEditingDetails] = useState(false);
   const [mobileStep, setMobileStep] = useState<"idle" | "enter" | "otp">("idle");
@@ -486,16 +488,33 @@ export default function Profile() {
         </CardHeader>
         <CardContent className="p-6 pt-0">
           <Button
-            variant="destructive"
-            className="w-full sm:w-auto"
-            onClick={handleLogout}
-            disabled={logout.isPending}
-          >
-            {logout.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <LogOut className="w-4 h-4 mr-2" />}
-            Sign Out
-          </Button>
+  variant="destructive"
+  className="w-full sm:w-auto"
+  onClick={() => setShowLogoutConfirm(true)}
+  disabled={logout.isPending}
+>
+  {logout.isPending ? (
+    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+  ) : (
+    <LogOut className="w-4 h-4 mr-2" />
+  )}
+  Sign Out
+</Button>
         </CardContent>
       </Card>
+      <DoubleConfirmDialog
+  open={showLogoutConfirm}
+  title="Sign Out"
+  description="You are about to sign out of your account. You'll need to log in again to continue."
+  confirmWord="SIGNOUT"
+  actionLabel="Sign Out"
+  isLoading={logout.isPending}
+  onCancel={() => setShowLogoutConfirm(false)}
+  onConfirm={() => {
+    setShowLogoutConfirm(false);
+    handleLogout();
+  }}
+/>
     </div>
   );
 }

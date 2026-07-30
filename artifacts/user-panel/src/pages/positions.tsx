@@ -1,6 +1,13 @@
 // pages/positions.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { useGetPositions, useGetClosedOrders, getGetPositionsQueryKey, placeOrder } from "@workspace/api-client-react";
+import {
+  useGetPositions,
+  useGetClosedOrders,
+  useGetBalance,
+  getGetPositionsQueryKey,
+  getGetBalanceQueryKey,
+  placeOrder,
+} from "@workspace/api-client-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -8,12 +15,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCurrency, formatPnl, formatNumber } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, LayoutTemplate, InboxIcon, Search, X, SlidersHorizontal } from "lucide-react";
+import { RefreshCw, LayoutTemplate, InboxIcon, Search, X, SlidersHorizontal, Wallet } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { format } from "date-fns";
-import { DoubleConfirmDialog } from "@/components/double-confirm-dialog";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 
 interface PositionFilters {
   search: string;
@@ -35,6 +51,7 @@ export default function Positions() {
   const { toast } = useToast();
   const { data, isLoading, isRefetching, refetch } = useGetPositions();
   const getClosedOrders = useGetClosedOrders();
+  const { data: balance, isLoading: isBalanceLoading, isRefetching: isBalanceRefetching } = useGetBalance();
 
   const [tab, setTab] = useState<"positions" | "closed">("positions");
 
@@ -91,6 +108,7 @@ export default function Positions() {
 
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: getGetPositionsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetBalanceQueryKey() });
     getClosedOrders.mutate({ data: {} });
   };
 
@@ -158,9 +176,45 @@ export default function Positions() {
     <div className="space-y-6 h-full flex flex-col pb-28">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold tracking-tight">Positions</h1>
-        <Button variant="outline" size="icon" onClick={handleRefresh} className={isRefetching ? "animate-spin" : ""}>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={handleRefresh}
+          className={(isRefetching || isBalanceRefetching) ? "animate-spin" : ""}
+        >
           <RefreshCw className="w-4 h-4" />
         </Button>
+      </div>
+
+      {/* Balance overview */}
+      <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-gradient-to-r from-card to-muted/20 px-4 py-3">
+        <div className="flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 shrink-0">
+          <Wallet className="w-4 h-4 text-primary" />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Total Balance</div>
+          {isBalanceLoading ? (
+            <Skeleton className="h-6 w-24 mt-0.5" />
+          ) : (
+            <div className="text-xl font-bold tracking-tight leading-tight truncate">
+              {formatCurrency(balance?.totalBalance)}
+            </div>
+          )}
+        </div>
+
+        <div className="w-px self-stretch bg-border/60" />
+
+        <div className="flex-1 min-w-0 text-right">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Available</div>
+          {isBalanceLoading ? (
+            <Skeleton className="h-6 w-20 mt-0.5 ml-auto" />
+          ) : (
+            <div className="text-xl font-bold tracking-tight leading-tight truncate">
+              {formatCurrency(balance?.availableBalance)}
+            </div>
+          )}
+        </div>
       </div>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as "positions" | "closed")} className="flex-1 flex flex-col">
@@ -392,20 +446,35 @@ export default function Positions() {
         </TabsContent>
       </Tabs>
 
-      <DoubleConfirmDialog
-        open={confirmMode !== null}
-        title={confirmMode === "all" ? "Exit All Positions" : "Exit Selected Positions"}
-        description={
-          confirmMode === "all"
-            ? `This will close all ${positions.length} open position${positions.length !== 1 ? "s" : ""} at market price.`
-            : `This will close ${selected.size} selected position${selected.size !== 1 ? "s" : ""} at market price.`
-        }
-        confirmWord="EXIT"
-        actionLabel={confirmMode === "all" ? "Exit All" : "Exit Selected"}
-        isLoading={isBusy}
-        onCancel={() => setConfirmMode(null)}
-        onConfirm={confirmMode === "all" ? doExitAll : doExitSelected}
-      />
+      <AlertDialog open={confirmMode !== null} onOpenChange={(open) => !open && !isBusy && setConfirmMode(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmMode === "all" ? "Exit All Positions?" : "Exit Selected Positions?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmMode === "all"
+                ? `This will close all ${positions.length} open position${positions.length !== 1 ? "s" : ""} at market price.`
+                : `This will close ${selected.size} selected position${selected.size !== 1 ? "s" : ""} at market price.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isBusy} onClick={() => setConfirmMode(null)}>
+              No
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                confirmMode === "all" ? doExitAll() : doExitSelected();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isBusy ? "Exiting…" : "Yes"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

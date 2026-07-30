@@ -23,6 +23,17 @@ const MOBILE_NAV_ITEMS = [
   { href: "/profile", label: "Profile", icon: User },
 ];
 
+// Small helper so "BUY" renders green and "SELL" renders red everywhere the label appears
+function BuySellLabel({ className }: { className?: string }) {
+  return (
+    <span className={className}>
+      <span className="text-profit font-bold">BUY</span>
+      <span className="text-muted-foreground"> / </span>
+      <span className="text-loss font-bold">SELL</span>
+    </span>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const { account, isLoading } = useAuth();
   const [location] = useLocation();
@@ -77,10 +88,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="p-4">
             <Link
               href="/place-order"
-              className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg text-sm font-medium transition-colors"
+              className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-card border border-border hover:bg-accent rounded-lg text-sm font-medium transition-colors"
             >
               <img src={buySellIconImg} alt="" className="w-4 h-4 rounded-sm object-cover" />
-              BUY / SELL
+              <BuySellLabel />
             </Link>
           </div>
         </aside>
@@ -114,9 +125,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 >
                   <img src={buySellIconImg} alt="Buy / Sell" className="w-full h-full object-cover" />
                 </div>
-                <span className="text-[10px] font-medium text-muted-foreground mt-1 scale-90">
-                  {item.label}
-                </span>
+                <BuySellLabel className="text-[10px] mt-1 scale-90" />
               </Link>
             );
           }

@@ -14,7 +14,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { DoubleConfirmDialog } from "@/components/double-confirm-dialog";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { repunchStore, useWatchedSlots, useSetWatchedSlots, type WatchedSlot } from "@/lib/repunchStore";
 
 interface OrderFilters {
@@ -43,9 +45,9 @@ type RepunchConfirm =
 const slotStatusLabel = (slot: WatchedSlot): string => {
   if (slot.stopped) return "Stopped";
   switch (slot.status) {
-    case "pending_fill": return "Pending Fill";
+    case "pending_fill": return "Pending";
     case "placing_tp": return "Placing TP";
-    case "watching": return "Watching";
+    case "watching": return "Trade";
     case "repunching": return "Re-punching…";
     default: return slot.status;
   }
@@ -74,7 +76,7 @@ export default function Orders() {
 
   const initialTab = useMemo<"open" | "repunch">(() => {
     const params = new URLSearchParams(search);
-    return params.get("tab") === "repunch" ? "repunch" : "open";
+    return params.get("tab") === "open" ? "open" : "repunch";
   }, [search]);
 
   const [tab, setTab] = useState<"open" | "repunch">(initialTab);
@@ -250,11 +252,11 @@ export default function Orders() {
   const repunchConfirmCfg = useMemo(() => {
     if (!repunchConfirm) return null;
     switch (repunchConfirm.type) {
-      case "stop_one": return { title: "Stop Re-punching", description: `Stop auto re-punch for ${repunchConfirm.label}?`, confirmWord: "STOP", actionLabel: "Stop" };
-      case "stop_selected": return { title: "Stop Selected", description: `Stop auto re-punch for ${repunchConfirm.count} selected slot${repunchConfirm.count !== 1 ? "s" : ""}?`, confirmWord: "STOP", actionLabel: "Stop Selected" };
-      case "remove_one": return { title: "Remove From Monitor", description: `Remove ${repunchConfirm.label} from the re-punch monitor?`, confirmWord: "REMOVE", actionLabel: "Remove" };
-      case "remove_selected": return { title: "Remove Selected", description: `Remove ${repunchConfirm.count} selected slot${repunchConfirm.count !== 1 ? "s" : ""}?`, confirmWord: "REMOVE", actionLabel: "Remove Selected" };
-      case "clear_all": return { title: "Clear Re-punch Monitor", description: `Remove all ${repunchConfirm.count} slot${repunchConfirm.count !== 1 ? "s" : ""}?`, confirmWord: "CLEAR", actionLabel: "Clear All" };
+      case "stop_one": return { title: "Stop Re-punching", description: `Stop auto re-punch for ${repunchConfirm.label}?`, actionLabel: "Stop" };
+      case "stop_selected": return { title: "Stop Selected", description: `Stop auto re-punch for ${repunchConfirm.count} selected slot${repunchConfirm.count !== 1 ? "s" : ""}?`, actionLabel: "Stop Selected" };
+      case "remove_one": return { title: "Remove From Monitor", description: `Remove ${repunchConfirm.label} from the re-punch monitor?`, actionLabel: "Remove" };
+      case "remove_selected": return { title: "Remove Selected", description: `Remove ${repunchConfirm.count} selected slot${repunchConfirm.count !== 1 ? "s" : ""}?`, actionLabel: "Remove Selected" };
+      case "clear_all": return { title: "Clear Re-punch Monitor", description: `Remove all ${repunchConfirm.count} slot${repunchConfirm.count !== 1 ? "s" : ""}?`, actionLabel: "Clear All" };
     }
   }, [repunchConfirm]);
 
@@ -356,7 +358,7 @@ export default function Orders() {
         </TabsContent>
       </Tabs>
 
-      <DoubleConfirmDialog
+      <SimpleConfirmDialog
         open={confirmMode !== null}
         title={confirmMode === "all" ? "Cancel All Orders" : "Cancel Selected Orders"}
         description={
@@ -364,24 +366,62 @@ export default function Orders() {
             ? `This will cancel all ${openOrders.length} open order${openOrders.length !== 1 ? "s" : ""}.`
             : `This will cancel ${selected.size} selected order${selected.size !== 1 ? "s" : ""}.`
         }
-        confirmWord="CANCEL"
         actionLabel={confirmMode === "all" ? "Cancel All" : "Cancel Selected"}
         isLoading={isBusy}
         onCancel={() => setConfirmMode(null)}
         onConfirm={confirmMode === "all" ? doCancelAll : doCancelSelected}
       />
 
-      <DoubleConfirmDialog
+      <SimpleConfirmDialog
         open={repunchConfirm !== null}
         title={repunchConfirmCfg?.title ?? ""}
         description={repunchConfirmCfg?.description ?? ""}
-        confirmWord={repunchConfirmCfg?.confirmWord ?? "CONFIRM"}
         actionLabel={repunchConfirmCfg?.actionLabel ?? "Confirm"}
         isLoading={false}
         onCancel={() => setRepunchConfirm(null)}
         onConfirm={handleRepunchConfirm}
       />
     </div>
+  );
+}
+
+function SimpleConfirmDialog({
+  open, title, description, actionLabel, isLoading, onCancel, onConfirm,
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  actionLabel: string;
+  isLoading?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}
+          >
+            No
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isLoading}
+            className="px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50"
+            style={{ background: "hsl(345 88% 58%)", color: "#fff" }}
+          >
+            {isLoading ? "Working…" : actionLabel}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -423,15 +463,34 @@ function SearchFilterBar({
 
       <div className="flex items-center gap-2 flex-wrap">
         <SlidersHorizontal className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <FilterSelect
-          value={filters.side}
-          onChange={(v) => setFilters((f) => ({ ...f, side: v as OrderFilters["side"] }))}
-          options={[
-            { value: "ALL", label: "All Sides" },
-            { value: "BUY", label: "▲ Buy" },
-            { value: "SELL", label: "▼ Sell" },
-          ]}
-        />
+        <div className="flex items-center rounded-md border border-border overflow-hidden">
+  {(["ALL", "BUY", "SELL"] as const).map((side) => (
+    <button
+      key={side}
+      onClick={() =>
+        setFilters((f) => ({
+          ...f,
+          side,
+        }))
+      }
+      className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+        filters.side === side
+          ? side === "BUY"
+            ? "bg-green-600 text-white"
+            : side === "SELL"
+            ? "bg-red-600 text-white"
+            : "bg-primary text-primary-foreground"
+          : "bg-muted text-muted-foreground hover:bg-muted/80"
+      }`}
+    >
+      {side === "ALL"
+        ? "All"
+        : side === "BUY"
+        ? "▲ Buy"
+        : "▼ Sell"}
+    </button>
+  ))}
+</div>
         <FilterSelect
           value={filters.orderType}
           onChange={(v) => setFilters((f) => ({ ...f, orderType: v as OrderFilters["orderType"] }))}
@@ -518,23 +577,42 @@ function RepunchFilterBar({
 
       <div className="flex items-center gap-2 flex-wrap">
         <SlidersHorizontal className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <FilterSelect
-          value={filters.side}
-          onChange={(v) => setFilters((f) => ({ ...f, side: v as RepunchFilters["side"] }))}
-          options={[
-            { value: "ALL", label: "All Sides" },
-            { value: "BUY", label: "▲ Buy" },
-            { value: "SELL", label: "▼ Sell" },
-          ]}
-        />
+        <div className="flex items-center rounded-md border border-border overflow-hidden">
+  {(["ALL", "BUY", "SELL"] as const).map((side) => (
+    <button
+      key={side}
+      onClick={() =>
+        setFilters((f) => ({
+          ...f,
+          side,
+        }))
+      }
+      className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+        filters.side === side
+          ? side === "BUY"
+            ? "bg-green-600 text-white"
+            : side === "SELL"
+            ? "bg-red-600 text-white"
+            : "bg-primary text-primary-foreground"
+          : "bg-muted text-muted-foreground hover:bg-muted/80"
+      }`}
+    >
+      {side === "ALL"
+        ? "All"
+        : side === "BUY"
+        ? "▲ Buy"
+        : "▼ Sell"}
+    </button>
+  ))}
+</div>
         <FilterSelect
           value={filters.status}
           onChange={(v) => setFilters((f) => ({ ...f, status: v as RepunchFilters["status"] }))}
           options={[
             { value: "ALL", label: "All Statuses" },
-            { value: "pending_fill", label: "Pending Fill" },
+            { value: "pending_fill", label: "Pending  " },
             { value: "placing_tp", label: "Placing TP" },
-            { value: "watching", label: "Watching" },
+            { value: "watching", label: "Trade" },
             { value: "repunching", label: "Re-punching" },
             { value: "stopped", label: "Stopped" },
           ]}

@@ -254,8 +254,8 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
   const updateSettingsMut = useUpdateSettings();
 
   const [orderCount, setOrderCount] = useState(savedConfig?.orderCount ?? 6);
-  const [stepSize, setStepSize] = useState(savedConfig?.stepSize ?? 50);
-  const [tpPoints, setTpPoints] = useState(savedConfig?.tpPoints ?? 100);
+  const [stepSize, setStepSize] = useState<string>(savedConfig?.stepSize != null ? String(savedConfig.stepSize) : "");
+  const [tpPoints, setTpPoints] = useState<string>(savedConfig?.tpPoints != null ? String(savedConfig.tpPoints) : "");
   const [isExecuting, setIsExecuting] = useState(false);
   const [orderStatuses, setOrderStatuses] = useState<Map<number, OrderStatus>>(new Map());
   const [orderErrors, setOrderErrors] = useState<Map<number, string>>(new Map());
@@ -263,9 +263,19 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState(false);
 
+  const stepSizeNum = parseFloat(stepSize) || 0;
+  const tpPointsNum = parseFloat(tpPoints) || 0;
+
   useEffect(() => {
     if (open) {
-      if (savedConfig) { setOrderCount(savedConfig.orderCount); setStepSize(savedConfig.stepSize); setTpPoints(savedConfig.tpPoints); }
+      if (savedConfig) {
+        setOrderCount(savedConfig.orderCount);
+        setStepSize(String(savedConfig.stepSize));
+        setTpPoints(String(savedConfig.tpPoints));
+      } else {
+        setStepSize("");
+        setTpPoints("");
+      }
       setOrderStatuses(new Map()); setOrderErrors(new Map()); setHasExecuted(false);
     }
   }, [open]);
@@ -280,14 +290,14 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
   const previewOrders: PreviewOrder[] = useMemo(() => {
     const entry = parseFloat(entryPrice);
     const qty = parseFloat(quantity);
-    if (isNaN(entry) || entry <= 0 || isNaN(qty) || qty <= 0 || orderCount < 1) return [];
+    if (isNaN(entry) || entry <= 0 || isNaN(qty) || qty <= 0 || orderCount < 1 || stepSizeNum <= 0) return [];
     return Array.from({ length: orderCount }, (_, i) => {
       const n = i + 1;
-      const limitPrice = side === "BUY" ? entry - stepSize * n : entry + stepSize * n;
-      const tpPrice = side === "BUY" ? limitPrice + tpPoints : limitPrice - tpPoints;
+      const limitPrice = side === "BUY" ? entry - stepSizeNum * n : entry + stepSizeNum * n;
+      const tpPrice = side === "BUY" ? limitPrice + tpPointsNum : limitPrice - tpPointsNum;
       return { index: n, limitPrice, tpPrice, quantity: qty, status: "pending" as OrderStatus };
     });
-  }, [side, entryPrice, quantity, orderCount, stepSize, tpPoints]);
+  }, [side, entryPrice, quantity, orderCount, stepSizeNum, tpPointsNum]);
 
   const doneCount = [...orderStatuses.values()].filter((s) => s === "success" || s === "failed").length;
   const successCount = [...orderStatuses.values()].filter((s) => s === "success").length;
@@ -296,15 +306,15 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
 
   const entryValid = !isNaN(parseFloat(entryPrice)) && parseFloat(entryPrice) > 0;
   const qtyValid = !isNaN(parseFloat(quantity)) && parseFloat(quantity) > 0;
-  const canExecute = entryValid && qtyValid && !isExecuting;
+  const canExecute = entryValid && qtyValid && stepSizeNum > 0 && !isExecuting;
 
   const handleSaveConfig = useCallback(async () => {
     setIsSaving(true);
-    updateSettingsMut.mutate({ data: { autoPunchConfig: { orderCount, stepSize, tpPoints } } }, {
-      onSuccess: () => { onConfigSaved({ orderCount, stepSize, tpPoints }); setLastSaved(true); setIsSaving(false); toast({ title: "Config saved ✓", description: "These settings are now the default." }); },
+    updateSettingsMut.mutate({ data: { autoPunchConfig: { orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum } } }, {
+      onSuccess: () => { onConfigSaved({ orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum }); setLastSaved(true); setIsSaving(false); toast({ title: "Config saved ✓", description: "These settings are now the default." }); },
       onError: (err: any) => { setIsSaving(false); toast({ title: "Failed to save config", description: err.message, variant: "destructive" }); },
     });
-  }, [orderCount, stepSize, tpPoints, updateSettingsMut, onConfigSaved, toast]);
+  }, [orderCount, stepSizeNum, tpPointsNum, updateSettingsMut, onConfigSaved, toast]);
 
   const handleExecute = useCallback(async () => {
     if (!entryValid || !qtyValid) { toast({ title: "Set a valid price and quantity in the Trade Terminal first", variant: "destructive" }); return; }
@@ -347,12 +357,25 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "hsl(var(--background) / 0.7)", backdropFilter: "blur(4px)" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="relative flex rounded-2xl overflow-hidden shadow-2xl" style={{ width: "min(92vw, 700px)", height: "min(90vh, 500px)", border: "1px solid hsl(258 82% 64% / 0.3)", background: "hsl(var(--card))" }}>
-        <div className="w-48 shrink-0 flex flex-col overflow-y-auto p-4 gap-3" style={{ borderRight: "1px solid hsl(var(--border))" }}>
+      <div className="relative flex flex-col rounded-2xl overflow-hidden shadow-2xl" style={{ width: "min(92vw, 700px)", height: "min(90vh, 500px)", border: "1px solid hsl(258 82% 64% / 0.3)", background: "hsl(var(--card))" }}>
+
+        {/* Title bar */}
+        <div className="flex items-center justify-between px-4 py-2.5 shrink-0" style={{ borderBottom: "1px solid hsl(var(--border))", background: "hsl(var(--muted) / 0.3)" }}>
           <div className="flex items-center gap-2">
             <Zap className="w-4 h-4 shrink-0" style={{ color: "hsl(var(--primary))" }} />
             <span className="font-bold text-sm">Auto-Punch</span>
           </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ border: "1px solid hsl(345 88% 58% / 0.35)", background: "hsl(345 88% 58% / 0.1)", color: "hsl(345 88% 58%)" }}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex flex-1 min-h-0">
+          <div className="w-48 shrink-0 flex flex-col overflow-y-auto p-4 gap-3" style={{ borderRight: "1px solid hsl(var(--border))" }}>
           <div className="rounded-lg px-3 py-2 space-y-1 text-[11px]" style={{ background: "hsl(var(--muted))", border: "1px solid hsl(var(--border))" }}>
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">From Trade Terminal</p>
             <div className="flex justify-between"><span className="text-muted-foreground">Direction</span><span className="font-bold" style={{ color: side === "BUY" ? "hsl(162 88% 42%)" : "hsl(345 88% 58%)" }}>{side === "BUY" ? "▲ BUY" : "▼ SELL"}</span></div>
@@ -368,15 +391,33 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
           </div>
           <div>
             <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Step Size (pts)</label>
-            <input className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="1" step="1" value={stepSize} onChange={(e) => { setStepSize(Math.max(0, Number(e.target.value))); resetExecution(); }} />
-            <p className="text-[10px] text-muted-foreground mt-0.5">Limits placed every {stepSize} pts {side === "BUY" ? "below" : "above"} entry.</p>
+            <input
+              className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+              type="number"
+              min="1"
+              step="1"
+              inputMode="decimal"
+              value={stepSize}
+              onChange={(e) => { setStepSize(e.target.value); resetExecution(); }}
+              placeholder="e.g. 50"
+            />
+            <p className="text-[10px] text-muted-foreground mt-0.5">Limits placed every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry.</p>
           </div>
           <div>
             <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Take Profit (pts)</label>
-            <input className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors" type="number" min="1" step="1" value={tpPoints} onChange={(e) => { setTpPoints(Math.max(1, Number(e.target.value))); resetExecution(); }} />
-            <p className="text-[10px] text-muted-foreground mt-0.5">TP = limit {side === "BUY" ? "+" : "−"} {tpPoints} pts per order.</p>
+            <input
+              className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+              type="number"
+              min="1"
+              step="1"
+              inputMode="decimal"
+              value={tpPoints}
+              onChange={(e) => { setTpPoints(e.target.value); resetExecution(); }}
+              placeholder="e.g. 100"
+            />
+            <p className="text-[10px] text-muted-foreground mt-0.5">TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts per order.</p>
           </div>
-          <button onClick={handleSaveConfig} disabled={isSaving} className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+          <button onClick={handleSaveConfig} disabled={isSaving || stepSizeNum <= 0} className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
             style={lastSaved ? { background: "hsl(162 88% 42% / 0.12)", color: "hsl(162 88% 42%)", border: "1px solid hsl(162 88% 42% / 0.3)" } : { background: "hsl(258 82% 64% / 0.1)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.3)" }}>
             {isSaving ? <><Loader2 className="w-3 h-3 animate-spin" /> Saving…</> : lastSaved ? <><CheckCircle2 className="w-3 h-3" /> Saved ✓</> : <><Save className="w-3 h-3" /> Save as Default</>}
           </button>
@@ -389,7 +430,7 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
         </div>
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {(isExecuting || hasExecuted) && previewOrders.length > 0 && (
-            <div className="shrink-0 px-4 py-2.5 space-y-1.5" style={{ borderBottom: "1px solid hsl(var(--border))" }}>
+            <div className="shrink-0 px-4 py-2.5 space-y-1.5 pr-12" style={{ borderBottom: "1px solid hsl(var(--border))" }}>
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold">{isExecuting ? "Punching orders…" : "Execution complete"}</span>
                 <span className="text-muted-foreground">
@@ -408,7 +449,7 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
               <div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
                 <Zap className="w-8 h-8 opacity-20" />
                 <p className="text-sm font-medium">No orders to preview</p>
-                <p className="text-xs text-center max-w-xs opacity-70">Enter an entry price and quantity on the left.</p>
+                <p className="text-xs text-center max-w-xs opacity-70">Enter an entry price, quantity, and step size to preview.</p>
               </div>
             ) : previewOrders.map((order, rowIdx) => {
               const status = orderStatuses.get(order.index) ?? "pending";
@@ -427,8 +468,8 @@ function AutoPunchDrawer({ open, onClose, side, entryPrice, quantity, onConfigSa
               );
             })}
           </div>
+       </div>
         </div>
-        <button onClick={onClose} className="absolute top-3 right-3 p-1.5 rounded-lg transition-colors text-muted-foreground hover:text-foreground" style={{ border: "1px solid hsl(var(--border))" }}><X className="w-4 h-4" /></button>
       </div>
     </div>
   );
@@ -1032,7 +1073,7 @@ export default function PlaceOrder() {
         <div className="w-full md:w-80 md:shrink-0 flex flex-col overflow-y-auto" style={{ borderRight: "1px solid hsl(var(--border))" }}>
           <div className="p-4 pb-8 flex flex-col gap-3">
             <div>
-              <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Symbol</label>
+              {/* <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Symbol</label> */}
               <div className="relative">
                 <select value={symbol} onChange={(e) => setSymbol(e.target.value)}
                   className="w-full appearance-none rounded-lg px-3 py-2.5 pr-9 text-sm font-bold uppercase tracking-wider bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors cursor-pointer">
@@ -1137,39 +1178,6 @@ export default function PlaceOrder() {
                 style={side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff", boxShadow: "0 0 16px hsl(162 88% 42% / 0.3)" } : { background: "hsl(345 88% 58%)", color: "#fff", boxShadow: "0 0 16px hsl(345 88% 58% / 0.3)" }}>
                 {isExecuting ? "Executing…" : `${side} ${symbol}`}
               </button>
-            </div>
-
-            <div className="border-t border-border pt-3">
-              <button onClick={() => setShowMulti((v) => !v)} className="flex items-center gap-2 w-full text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors">
-                {showMulti ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}Multi-Order Queue {multiOrders.length > 0 && `(${multiOrders.length})`}
-              </button>
-              {showMulti && (
-                <div className="mt-3 space-y-2">
-                  {multiOrders.map((row) => (
-                    <div key={row.id} className="rounded-lg p-2 space-y-1.5" style={{ border: "1px solid hsl(var(--border))", background: "hsl(var(--muted))" }}>
-                      <div className="flex gap-1">
-                        <input className="flex-1 rounded px-2 py-1 text-xs font-bold uppercase bg-input border border-border focus:outline-none" value={row.symbol} onChange={(e) => updateMultiRow(row.id, { symbol: e.target.value.toUpperCase() })} placeholder="Symbol" />
-                        <button onClick={() => removeMultiRow(row.id)} className="p-1 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
-                      <div className="flex gap-1">
-                        <button onClick={() => updateMultiRow(row.id, { side: "BUY" })} className="flex-1 py-1 rounded text-xs font-bold" style={row.side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff" } : { background: "hsl(162 88% 42% / 0.1)", color: "hsl(162 88% 48%)", border: "1px solid hsl(162 88% 42% / 0.3)" }}>BUY</button>
-                        <button onClick={() => updateMultiRow(row.id, { side: "SELL" })} className="flex-1 py-1 rounded text-xs font-bold" style={row.side === "SELL" ? { background: "hsl(345 88% 58%)", color: "#fff" } : { background: "hsl(345 88% 58% / 0.1)", color: "hsl(345 88% 64%)", border: "1px solid hsl(345 88% 58% / 0.3)" }}>SELL</button>
-                      </div>
-                      <div className="flex gap-1">
-                        <input className="flex-1 rounded px-2 py-1 text-xs font-mono bg-input border border-border focus:outline-none" type="number" value={row.quantity} onChange={(e) => updateMultiRow(row.id, { quantity: e.target.value })} placeholder="Qty" />
-                        <select className="rounded px-2 py-1 text-xs bg-input border border-border focus:outline-none" value={row.orderType} onChange={(e) => updateMultiRow(row.id, { orderType: e.target.value as "MARKET" | "LIMIT" })}>
-                          <option value="MARKET">MKT</option><option value="LIMIT">LMT</option>
-                        </select>
-                      </div>
-                      {row.orderType !== "MARKET" && (<input className="w-full rounded px-2 py-1 text-xs font-mono bg-input border border-border focus:outline-none" type="number" value={row.price} onChange={(e) => updateMultiRow(row.id, { price: e.target.value })} placeholder="Limit price" />)}
-                    </div>
-                  ))}
-                  <div className="flex gap-2">
-                    <button onClick={addMultiRow} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ border: "1px solid hsl(var(--border))", color: "hsl(var(--muted-foreground))" }}><Plus className="w-3 h-3" /> Add Order</button>
-                    {multiOrders.length > 0 && (<button onClick={handleExecuteMulti} disabled={isExecutingMulti} className="flex-1 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50" style={{ background: "hsl(var(--primary))", color: "#fff" }}>{isExecutingMulti ? "Executing…" : `Execute All (${multiOrders.length})`}</button>)}
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -1395,25 +1403,6 @@ export default function PlaceOrder() {
           {rightTab === "repunch" && filteredSlots.length > 0 && (<PaginationBar page={repunchPagination.page} pageSize={repunchPagination.pageSize} totalPages={repunchPagination.totalPages} totalItems={repunchPagination.totalItems} hasPrev={repunchPagination.hasPrev} hasNext={repunchPagination.hasNext} onPage={repunchPagination.setPage} onPageSize={repunchPagination.setPageSize} />)}
         </div>
       </div>
-
-      {/* Mobile full-screen Re-punch Monitor modal */}
-      {/* <MobileRepunchModal
-        open={showMobileRepunchModal}
-        onClose={() => setShowMobileRepunchModal(false)}
-        slots={filteredSlots}
-        filters={repunchFilters}
-        setFilters={setRepunchFilters}
-        activeFilterCount={repunchActiveFilters}
-        onClearFilters={clearRepunchFilters}
-        totalCount={watchedSlots.length}
-        selectedSlots={selectedSlots}
-        setSelectedSlots={setSelectedSlots}
-        onToggleStopped={toggleSlotStopped}
-        onRequestStopOne={(slotId, label) => setConfirmState({ type: "repunch_stop_one", slotId, label })}
-        onRequestRemoveOne={(slotId, label) => setConfirmState({ type: "repunch_remove_one", slotId, label })}
-        onRequestClearAll={() => setConfirmState({ type: "repunch_clear_all", count: watchedSlots.length })}
-        onRefresh={() => void refetchOrders()}
-      /> */}
 
       <AutoPunchDrawer
         open={showAutoPunchDrawer} onClose={() => setShowAutoPunchDrawer(false)} side={side} entryPrice={price} quantity={quantity}
