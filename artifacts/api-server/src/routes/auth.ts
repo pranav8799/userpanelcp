@@ -10,13 +10,7 @@ import type { Request, Response } from "express";
 const router = Router();
 
 // Rate limit: max 3 OTP sends per number per 10 minutes (keyed by IP)
-const otpRateLimit = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 3,
-  message: { error: "Too many OTP requests. Please wait 10 minutes before trying again." },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+
 
 // ── Helper: send SMS via powerstext.in ──────────────────────────────────────
 async function sendSms(phone: string, message: string): Promise<void> {
@@ -50,7 +44,7 @@ async function sendSms(phone: string, message: string): Promise<void> {
 }
 
 // POST /auth/send-otp
-router.post("/send-otp", otpRateLimit, async (req: Request, res: Response): Promise<void> => {
+router.post("/send-otp", async (req: Request, res: Response): Promise<void> => {
   const phone = (req.body?.phone ?? "").toString().trim();
 
   if (!/^\d{10}$/.test(phone)) {

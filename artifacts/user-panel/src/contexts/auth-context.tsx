@@ -7,6 +7,7 @@ interface AuthContextType {
   isLoading: boolean;
   clearAuth: () => void;
   setAccount: (account: AccountInfo) => void;
+  refetchMe: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -14,6 +15,7 @@ const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   clearAuth: () => {},
   setAccount: () => {},
+  refetchMe: () => {},
 });
 
 const PUBLIC_ROUTES = ['/login', '/signup'];
@@ -22,27 +24,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccountState] = useState<AccountInfo | null>(null);
   const [location, setLocation] = useLocation();
 
-const { data, isLoading, error, refetch } = useGetMe({
+  const { data, isLoading, error, refetch } = useGetMe({
     query: { queryKey: getGetMeQueryKey(), retry: false },
   });
+
   useEffect(() => {
     if (data && !error) {
       setAccountState(data);
     } else if (error) {
       setAccountState(null);
     }
-  }, [data, error]); // ← only re-derive account from the query itself
+  }, [data, error]);
 
-  // Separate effect: redirect to /login *only* once we know we're logged out
-useEffect(() => {
-  if (!isLoading && !account && !PUBLIC_ROUTES.includes(location)) {
-    setLocation('/login');
-  }
-}, [isLoading, account, location, setLocation]);
+  useEffect(() => {
+    if (!isLoading && !account && !PUBLIC_ROUTES.includes(location)) {
+      setLocation('/login');
+    }
+  }, [isLoading, account, location, setLocation]);
 
   const setAccount = (acc: AccountInfo) => {
     setAccountState(acc);
-    void refetch(); // bring the query cache in sync with what we just set
+    void refetch();
   };
 
   const clearAuth = () => {
@@ -51,7 +53,7 @@ useEffect(() => {
   };
 
   return (
-    <AuthContext.Provider value={{ account, isLoading, clearAuth, setAccount }}>
+    <AuthContext.Provider value={{ account, isLoading, clearAuth, setAccount, refetchMe: refetch }}>
       {children}
     </AuthContext.Provider>
   );

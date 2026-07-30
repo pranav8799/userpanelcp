@@ -40,7 +40,10 @@ export default function Login() {
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [phone, setPhone] = useState("");
   const [, setLocation] = useLocation();
-  const { account, setAccount } = useAuth();
+
+  const { account, setAccount, refetchMe } = useAuth();
+
+
   const { toast } = useToast();
 
   const sendOtp = useSendOtp();
@@ -76,23 +79,20 @@ export default function Login() {
       }
     );
   };
-
   const onOtpSubmit = (data: z.infer<typeof otpSchema>) => {
-    verifyOtp.mutate(
-      { data },
-      {
-        onSuccess: (res) => {
-          setAccount(res.account);
-          toast({ title: "Welcome back", description: `Signed in as ${res.account.name}` });
-          // Navigation happens in the effect below, once `account` is actually
-          // updated in context — this avoids racing the route guard.
-        },
-        onError: (err) => {
-          otpForm.setError("otp", { message: getErrorMessage(err, "Invalid OTP") });
-        },
-      }
-    );
+    verifyOtp.mutate({ data }, {
+      onSuccess: async (res) => {
+        setAccount(res.account);
+        await refetchMe();
+        setLocation("/");
+        toast({ title: "Welcome back", description: `Signed in as ${res.account.name}` });
+      },
+      onError: (err) => {
+        otpForm.setError("otp", { message: getErrorMessage(err, "Invalid OTP") });
+      },
+    });
   };
+
 
   // Navigate only after auth state has actually propagated.
   useEffect(() => {
