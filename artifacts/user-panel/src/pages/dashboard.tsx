@@ -26,7 +26,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">
-  Good morning, {account?.name?.split(" ")[0] ?? "there"}
+  Hello, {account?.name?.split(" ")[0] ?? "there"}
 </h1>
           <p className="text-muted-foreground">Here is your trading overview.</p>
         </div>
