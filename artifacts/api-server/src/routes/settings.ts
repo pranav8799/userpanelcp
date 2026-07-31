@@ -24,7 +24,7 @@ export interface WatchedSlot {
   stopped?: boolean;
 }
 
-const AUTO_PUNCH_DEFAULTS: AutoPunchConfig = { orderCount: 6, stepSize: 50, tpPoints: 100 };
+const AUTO_PUNCH_DEFAULTS: AutoPunchConfig = { orderCount: 6, stepSize: 30, tpPoints: 60 };
 const VALID_SLOT_STATUSES = new Set(["pending_fill", "placing_tp", "watching", "repunching"]);
 
 async function getOrCreateSettings(accountId: number) {
