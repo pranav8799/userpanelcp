@@ -924,6 +924,30 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
 </div>
 {stepSizeNum > 0 && numberOfOrdersNum > 0 && (<p className="text-[10px] -mt-2" style={{ color: "hsl(258 82% 60%)" }}>⚡ Will ladder {numberOfOrdersNum} limit{numberOfOrdersNum !== 1 ? "s" : ""} from this price after entry.</p>)}
 
+            {/* Margin Required + Available Balance */}
+            <div className="rounded-xl p-3 text-xs space-y-2.5 transition-colors" style={{ border: `1px solid ${insufficientMargin ? "hsl(345 88% 58% / 0.4)" : "hsl(var(--border))"}`, background: insufficientMargin ? "hsl(345 88% 58% / 0.05)" : "hsl(var(--card))" }}>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-[9.5px] font-semibold uppercase tracking-widest text-muted-foreground">Margin Req.{willLadder ? ` · ${totalLegs}×` : ""}</span>
+                  <p className="font-mono font-bold text-[15px] mt-0.5 leading-none" style={insufficientMargin ? { color: "hsl(345 88% 58%)" } : undefined}>
+                    {requiredMargin != null ? fmt(requiredMargin) : "—"} <span className="text-[10px] font-medium text-muted-foreground">USDT</span>
+                  </p>
+                  <p className="font-mono text-[10px] text-muted-foreground mt-1">{requiredMargin != null ? fmtINR(requiredMargin * usdInrRate) : "—"}</p>
+                </div>
+                <div className="text-right">
+                  <span className="text-[9.5px] font-semibold uppercase tracking-widest text-muted-foreground">Available</span>
+                  <p className="font-mono font-bold text-[15px] mt-0.5 leading-none">{rawBalance != null ? fmt(rawBalance) : "—"} <span className="text-[10px] font-medium text-muted-foreground">USDT</span></p>
+                  <p className="font-mono text-[10px] text-muted-foreground mt-1">{rawBalance != null ? fmtINR(rawBalance * usdInrRate) : "—"}</p>
+                </div>
+              </div>
+              {requiredMargin != null && rawBalance != null && rawBalance > 0 && (
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "hsl(var(--muted))" }}>
+                  <div className="h-full rounded-full transition-all duration-300" style={{ width: `${Math.min(100, (requiredMargin / rawBalance) * 100)}%`, background: insufficientMargin ? "hsl(345 88% 58%)" : "hsl(162 88% 42%)" }} />
+                </div>
+              )}
+              {insufficientMargin && (<p className="text-[10px] flex items-center gap-1" style={{ color: "hsl(345 88% 58%)" }}><AlertTriangle className="w-3 h-3 shrink-0" /> Required margin exceeds available balance.</p>)}
+            </div>
+
             {/* 5. Leverage */}
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -1000,41 +1024,6 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
                 </div>
               </button>
             )}
-
-            <div className="border-t border-border" />
-
-            {/* 9. Available Balance */}
-            {/* Margin Required + Available Balance */}
-<div className="rounded-xl p-3 text-xs space-y-2" style={{ border: `1px solid ${insufficientMargin ? "hsl(345 88% 58% / 0.4)" : "hsl(var(--border))"}` }}>
-  <div>
-    <div className="flex justify-between items-baseline">
-      <span className="text-muted-foreground">Margin Required{willLadder ? ` (${totalLegs} orders)` : ""}</span>
-      <span className="font-mono font-semibold" style={insufficientMargin ? { color: "hsl(345 88% 58%)" } : undefined}>
-        {requiredMargin != null ? `${fmt(requiredMargin)} USDT` : "—"}
-      </span>
-    </div>
-    <div className="flex justify-end">
-      <span className="font-mono text-[10px] text-muted-foreground">
-        {requiredMargin != null ? fmtINR(requiredMargin * usdInrRate) : ""}
-      </span>
-    </div>
-  </div>
-  <div className="border-t border-border" />
-  <div>
-    <div className="flex justify-between items-baseline">
-      <span className="text-muted-foreground">Available Balance</span>
-      <span className="font-mono font-semibold">{rawBalance != null ? `${fmt(rawBalance)} USDT` : "—"}</span>
-    </div>
-    <div className="flex justify-end">
-      <span className="font-mono text-[10px] text-muted-foreground">
-        {rawBalance != null ? fmtINR(rawBalance * usdInrRate) : ""}
-      </span>
-    </div>
-  </div>
-  {insufficientMargin && (
-    <p className="text-[10px]" style={{ color: "hsl(345 88% 58%)" }}>⚠ Required margin exceeds available balance.</p>
-  )}
-</div>  
 
             <div className="space-y-2 pt-1">
               <button onClick={handleExecute} disabled={isExecuting} className="w-full py-3 rounded-xl font-bold text-sm tracking-wide transition-all disabled:opacity-50 disabled:cursor-not-allowed"
