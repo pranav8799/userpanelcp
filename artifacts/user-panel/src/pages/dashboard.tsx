@@ -1,12 +1,23 @@
 import React from "react";
 import { Link } from "wouter";
 import { useAuth } from "@/contexts/auth-context";
-import { useGetBalance, useGetPnlSummary, useGetClosedOrders, getGetBalanceQueryKey, getGetPnlSummaryQueryKey } from "@workspace/api-client-react";
+import {
+  useGetBalance,
+  useGetPnlSummary,
+  useGetClosedOrders,
+  useGetPositions,
+  useGetOpenOrders,
+  getLeverage,
+  getGetBalanceQueryKey,
+  getGetPnlSummaryQueryKey,
+  getGetPositionsQueryKey,
+} from "@workspace/api-client-react";
+import type { Position, Order } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency, formatPnl } from "@/lib/utils";
-import { ArrowRight, RefreshCw, PlusCircle, TrendingUp, TrendingDown, Clock } from "lucide-react";
+import { ArrowRight, RefreshCw, PlusCircle, TrendingUp, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
@@ -16,29 +27,33 @@ export default function Dashboard() {
 
   const { data: balance, isLoading: isBalanceLoading, isRefetching: isBalanceRefetching } = useGetBalance();
   const { data: pnl, isLoading: isPnlLoading, isRefetching: isPnlRefetching } = useGetPnlSummary();
-  
-  // Use a query hook for closed orders. Wait, the API has useGetClosedOrders as a mutation?
-  // Let me check api.ts... Ah, useGetClosedOrders is a POST so it's generated as a mutation hook.
-  // We need to use it in useEffect or wrap it in a useQuery if possible. 
-  // Let's look at the generated API again.
+  const { data: positions, isLoading: isPositionsLoading, isRefetching: isPositionsRefetching } = useGetPositions();
+
+  const getOpenOrders = useGetOpenOrders();
+
+  React.useEffect(() => {
+    getOpenOrders.mutate({ data: {} });
+  }, []);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">
-  Hello, {account?.name?.split(" ")[0] ?? "there"}
-</h1>
+            Hello, {account?.name?.split(" ")[0] ?? "there"}
+          </h1>
           <p className="text-muted-foreground">Here is your trading overview.</p>
         </div>
-        <Button 
-          variant="outline" 
-          size="icon" 
+        <Button
+          variant="outline"
+          size="icon"
           onClick={() => {
             queryClient.invalidateQueries({ queryKey: getGetBalanceQueryKey() });
             queryClient.invalidateQueries({ queryKey: getGetPnlSummaryQueryKey() });
-            // For mutations we might have to manually refetch.
+            queryClient.invalidateQueries({ queryKey: getGetPositionsQueryKey() });
+            getOpenOrders.mutate({ data: {} });
           }}
-          className={(isBalanceRefetching || isPnlRefetching) ? "animate-spin" : ""}
+          className={(isBalanceRefetching || isPnlRefetching || isPositionsRefetching) ? "animate-spin" : ""}
         >
           <RefreshCw className="w-4 h-4" />
         </Button>
@@ -56,7 +71,7 @@ export default function Dashboard() {
               <div className="text-4xl font-bold tracking-tight">{formatCurrency(balance?.totalBalance)}</div>
             )}
             <div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">Available:</span> 
+              <span className="font-medium text-foreground">Available:</span>
               {isBalanceLoading ? <Skeleton className="h-4 w-16 inline-block" /> : formatCurrency(balance?.availableBalance)}
             </div>
           </CardContent>
@@ -98,6 +113,16 @@ export default function Dashboard() {
         </Card>
       </div>
 
+      <MarginSummary
+  positions={positions?.positions}
+  isPositionsLoading={isPositionsLoading}
+  totalBalance={balance?.totalBalance}
+  availableBalance={balance?.availableBalance}
+  isBalanceLoading={isBalanceLoading}
+  totalPnl={pnl?.totalPnl}
+  isPnlLoading={isPnlLoading}
+/>
+
       <div className="flex gap-4">
         <Button asChild className="flex-1" size="lg">
           <Link href="/place-order">
@@ -109,7 +134,7 @@ export default function Dashboard() {
           <Link href="/positions">
             <TrendingUp className="w-5 h-5 mr-2" />
             Positions
-          </Link>
+          </Link>     
         </Button>
       </div>
 
@@ -126,9 +151,79 @@ export default function Dashboard() {
   );
 }
 
+function MarginSummary({
+  positions,
+  isPositionsLoading,
+  totalBalance,
+  availableBalance,
+  isBalanceLoading,
+  totalPnl,
+  isPnlLoading,
+}: {
+  positions?: Position[];
+  isPositionsLoading: boolean;
+  totalBalance?: string | null;
+  availableBalance?: string | null;
+  isBalanceLoading: boolean;
+  totalPnl?: number;
+  isPnlLoading: boolean;
+}) {
+  const usedMargin = React.useMemo(() => {
+    const list = positions ?? [];
+    return list.reduce((sum, p) => sum + Number(p.positionMargin ?? 0), 0);
+  }, [positions]);
+
+  const blockedMargin = React.useMemo(() => {
+    const total = Number(totalBalance ?? 0);
+    const available = Number(availableBalance ?? 0);
+    const lockedTotal = total - available;
+    return Math.max(0, lockedTotal - usedMargin);
+  }, [totalBalance, availableBalance, usedMargin]);
+
+  const isLoading = isPositionsLoading || isBalanceLoading;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Margin & PnL</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Used</div>
+            {isLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className="text-sm font-semibold">{formatCurrency(usedMargin)}</div>
+            )}
+          </div>
+          <div className="border-x">
+            <div className="text-xs text-muted-foreground mb-1">Blocked</div>
+            {isLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className="text-sm font-semibold">{formatCurrency(blockedMargin)}</div>
+            )}
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Realized</div>
+            {isPnlLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className={`text-sm font-semibold ${totalPnl && totalPnl > 0 ? "text-profit" : totalPnl && totalPnl < 0 ? "text-loss" : ""}`}>
+                {formatPnl(totalPnl).formatted}
+              </div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function RecentOrders() {
   const getClosedOrders = useGetClosedOrders();
-  
+
   React.useEffect(() => {
     getClosedOrders.mutate({ data: { limit: 5 } });
   }, []);
@@ -160,7 +255,7 @@ function RecentOrders() {
       {orders.map((order) => {
         const pnlInfo = formatPnl(order.realisedPnl);
         const isBuy = order.side === "BUY";
-        
+
         return (
           <Link key={order.orderId} href={`/orders/${order.orderId}`}>
             <Card className="hover:bg-accent/50 transition-colors cursor-pointer active:scale-[0.99] duration-200">
@@ -191,4 +286,4 @@ function RecentOrders() {
       })}
     </div>
   );
-}
+} 
