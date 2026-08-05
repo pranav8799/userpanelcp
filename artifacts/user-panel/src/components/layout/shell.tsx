@@ -57,10 +57,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <aside className="hidden lg:flex w-64 flex-col border-r bg-card/50">
           <div className="p-6">
             <h1 className="text-xl font-bold tracking-tight text-primary flex items-center gap-2">
-              <div className="w-6 h-6 rounded bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground text-xs font-bold">W</span>
-              </div>
-              WealthFunds<span className="text-muted-foreground">2x</span>
+              <img src={buySellIconImg} alt="My Trade Study" className="w-8 h-8 rounded-md object-cover" />
+              My Trade Study
             </h1>
           </div>
 
