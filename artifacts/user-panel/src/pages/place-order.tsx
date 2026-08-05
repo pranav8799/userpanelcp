@@ -98,9 +98,9 @@ const calcMargin = (quantity: string | number | null | undefined, price: string 
 const slotStatusLabel = (slot: WatchedSlot): string => {
   if (slot.stopped) return "Stopped";
   switch (slot.status) {
-    case "pending_fill": return "Pending Fill";
+    case "pending_fill": return "Pending";
     case "placing_tp": return "Placing TP";
-    case "watching": return "Watching";
+    case "watching": return "Trade";
     case "repunching": return "Re-punching…";
     default: return slot.status;
   }
@@ -864,7 +864,7 @@ export default function PlaceOrder() {
   const tabs: Array<{ key: "positions" | "orders" | "repunch"; label: string; count: number; filtered: number }> = [
     { key: "positions", label: "Positions", count: positionsArr.length, filtered: filteredPositions.length },
     { key: "orders", label: "Open Orders", count: ordersArr.length, filtered: filteredOrders.length },
-    { key: "repunch", label: "Re-punch Monitor", count: watchedSlots.length, filtered: filteredSlots.length },
+    { key: "repunch", label: "Auto Trade", count: watchedSlots.length, filtered: filteredSlots.length },
   ];
 
   const stepSizeNum = parseFloat(stepSize) || 0;
@@ -968,18 +968,8 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
 
             <div className="border-t border-border" />
 
-            {/* 6. Number of Orders */}
-            <div>
-  <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Number of Orders</label>
-  <input
-    className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
-    type="number" min="0" step="1" inputMode="numeric" value={numberOfOrders}
-    onChange={(e) => setNumberOfOrders(e.target.value)} placeholder="e.g. 6" />
-</div>
 
-            {/* 7. Buy Diff (step size) */}
-            {/* 7 & 8. Buy Diff + Take Profit */}
-<div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2">
   <div>
     <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Buy Diff (pts)</label>
     <input
@@ -998,6 +988,37 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
 <p className="text-[10px] text-muted-foreground -mt-2">
   Limits every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry · TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts.
 </p>
+
+            {/* 6. Number of Orders */}
+            <div>
+  <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Number of Orders</label>
+  <input
+    className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+    type="number" min="0" step="1" inputMode="numeric" value={numberOfOrders}
+    onChange={(e) => setNumberOfOrders(e.target.value)} placeholder="e.g. 6" />
+</div>
+
+            {/* 7. Buy Diff (step size) */}
+            {/* 7 & 8. Buy Diff + Take Profit */}
+  {/* <div className="grid grid-cols-2 gap-2">
+    <div>
+      <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Buy Diff (pts)</label>
+      <input
+        className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+        type="number" min="0" step="1" inputMode="decimal" value={stepSize}
+        onChange={(e) => setStepSize(e.target.value)} placeholder="e.g. 50" />
+    </div>
+    <div>
+      <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Take Profit (pts)</label>
+      <input
+        className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+        type="number" min="0" step="1" inputMode="decimal" value={takeProfit}
+        onChange={(e) => setTakeProfit(e.target.value)} placeholder="e.g. 100" />
+    </div>
+  </div>
+  <p className="text-[10px] text-muted-foreground -mt-2">
+    Limits every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry · TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts.
+  </p> */}
 
             {/* <button onClick={() => setConfirmState({ type: "save_and_place" })} disabled={isSavingDefaults} className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
               style={defaultsSaved ? { background: "hsl(162 88% 42% / 0.12)", color: "hsl(162 88% 42%)", border: "1px solid hsl(162 88% 42% / 0.3)" } : { background: "hsl(258 82% 64% / 0.1)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.3)" }}>
@@ -1098,7 +1119,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
             <TableToolbar searchValue={repunchFilters.search} onSearchChange={(v) => setRepunchFilters((f) => ({ ...f, search: v }))} searchPlaceholder="Search symbol…" activeFilterCount={repunchActiveFilters} onClearFilters={clearRepunchFilters} resultCount={filteredSlots.length} totalCount={watchedSlots.length}
               filterSlot={<>
                 <FilterChip label="Side" value={repunchFilters.side} options={[{ value: "ALL", label: "All Sides" }, { value: "BUY", label: "▲ Buy" }, { value: "SELL", label: "▼ Sell" }]} onChange={(v) => setRepunchFilters((f) => ({ ...f, side: v as RepunchFilters["side"] }))} activeColor="hsl(258 82% 60%)" />
-                <FilterChip label="Status" value={repunchFilters.status} options={[{ value: "ALL", label: "All Statuses" }, { value: "pending_fill", label: "Pending Fill" }, { value: "placing_tp", label: "Placing TP" }, { value: "watching", label: "Watching" }, { value: "repunching", label: "Re-punching" }, { value: "stopped", label: "Stopped" }]} onChange={(v) => setRepunchFilters((f) => ({ ...f, status: v as RepunchFilters["status"] }))} activeColor="hsl(162 88% 42%)" />
+                <FilterChip label="Status" value={repunchFilters.status} options={[{ value: "ALL", label: "All Statuses" }, { value: "pending_fill", label: "Pending" }, { value: "placing_tp", label: "Placing TP" }, { value: "watching", label: "Trade" }, { value: "repunching", label: "Re-punching" }, { value: "stopped", label: "Stopped" }]} onChange={(v) => setRepunchFilters((f) => ({ ...f, status: v as RepunchFilters["status"] }))} activeColor="hsl(162 88% 42%)" />
               </>} />
           )}
 
