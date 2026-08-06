@@ -116,6 +116,20 @@ const slotStatusColor = (slot: WatchedSlot): string => {
 
 const LEVERAGE_PRESETS = [10, 15, 20, 25, 30];
 const SYMBOL_OPTIONS = ["XAUUSDT", "XAGUSDT", "BTCUSDT", "ETHUSDT", "CLUSDT"] as const;
+const SYMBOL_NAMES: Record<string, string> = {
+  XAUUSDT: "GOLD",
+  XAGUSDT: "SILVER",
+  BTCUSDT: "BITCOIN",
+  ETHUSDT: "ETHEREUM",
+  CLUSDT: "CRUDE OIL",
+};
+// Display-only: "XAUUSDT (GOLD)". The raw symbol (e.g. "XAUUSDT") is still what's
+// stored in state and sent to the API — this never changes the underlying value.
+const symbolLabel = (sym: string | null | undefined): string => {
+  if (!sym) return "—";
+  const friendly = SYMBOL_NAMES[sym.toUpperCase()];
+  return friendly ? `${sym} (${friendly})` : sym;
+};
 // const ORDER_TYPES: { value: OrderInputOrderType; label: string }[] = [
 //   { value: "MARKET", label: "Market" },
 //   { value: "LIMIT", label: "Limit" },
@@ -235,7 +249,7 @@ function TableToolbar({ searchValue, onSearchChange, searchPlaceholder, filterSl
 function ConfirmDialog({ state, onConfirm, onCancel }: { state: ConfirmState; onConfirm: () => void; onCancel: () => void }) {
   if (!state) return null;
   const cfg = {
-    exit_one: { title: "Exit Position", desc: state.type === "exit_one" ? `Close ${state.pos.positionSide} on ${state.pos.symbol}?` : "", label: "Exit Position" },
+    exit_one: { title: "Exit Position", desc: state.type === "exit_one" ? `Close ${state.pos.positionSide} on ${symbolLabel(state.pos.symbol)}?` : "", label: "Exit Position" },
     exit_selected: { title: "Exit Selected", desc: state.type === "exit_selected" ? `Close ${state.count} position${state.count !== 1 ? "s" : ""}?` : "", label: `Exit Selected` },
     exit_all: { title: "Exit All", desc: state.type === "exit_all" ? `Close all ${state.count} position${state.count !== 1 ? "s" : ""}?` : "", label: `Exit All` },
     cancel_all: { title: "Cancel All Orders", desc: state.type === "cancel_all" ? `Cancel ${state.count} open order${state.count !== 1 ? "s" : ""}?` : "", label: `Cancel All` },
@@ -358,7 +372,7 @@ function MobileRepunchModal({
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Checkbox checked={isSelected} onCheckedChange={(v) => { setSelectedSlots((prev) => { const next = new Set(prev); if (v) next.add(slot.id); else next.delete(slot.id); return next; }); }} />
-                      <span className="font-bold font-mono text-sm">{slot.symbol}</span>
+                      <span className="font-bold font-mono text-sm">{symbolLabel(slot.symbol)}</span>
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={slot.side === "BUY" ? { background: "hsl(162 88% 42% / 0.15)", color: "hsl(162 88% 46%)" } : { background: "hsl(345 88% 58% / 0.15)", color: "hsl(345 88% 62%)" }}>{slot.side}</span>
                     </div>
                     <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold" style={{ background: `${slotStatusColor(slot)} / 0.15)`.replace(")", "").replace("hsl(", "hsl("), color: slotStatusColor(slot) }}>
@@ -889,7 +903,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
               <div className="relative">
                 <select value={symbol} onChange={(e) => setSymbol(e.target.value)}
                   className="w-full appearance-none rounded-lg px-3 py-2.5 pr-9 text-sm font-bold uppercase tracking-wider bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors cursor-pointer">
-                  {SYMBOL_OPTIONS.map((s) => (<option key={s} value={s}>{s}</option>))}
+                  {SYMBOL_OPTIONS.map((s) => (<option key={s} value={s}>{symbolLabel(s)}</option>))}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-muted-foreground" />
               </div>
@@ -1049,7 +1063,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
             <div className="space-y-2 pt-1">
               <button onClick={handleExecute} disabled={isExecuting} className="w-full py-3 rounded-xl font-bold text-sm tracking-wide transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 style={side === "BUY" ? { background: "hsl(162 88% 42%)", color: "#fff", boxShadow: "0 0 16px hsl(162 88% 42% / 0.3)" } : { background: "hsl(345 88% 58%)", color: "#fff", boxShadow: "0 0 16px hsl(345 88% 58% / 0.3)" }}>
-                {isExecuting ? "Executing…" : isPunching ? "Laddering…" : `${side} ${symbol}`}
+                {isExecuting ? "Executing…" : isPunching ? "Laddering…" : `${side} ${symbolLabel(symbol)}`}
               </button>
             </div>
           </div>
@@ -1146,7 +1160,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
                       <>
                         <tr key={posKey} style={{ borderBottom: isTpslOpen ? "none" : "1px solid hsl(var(--border))", background: isSelected ? "hsl(258 82% 64% / 0.06)" : idx % 2 === 0 ? "transparent" : "hsl(var(--muted) / 0.3)" }}>
                           <td className="px-3 py-2.5"><Checkbox checked={isSelected} onCheckedChange={(v) => { setSelectedPositions((prev) => { const next = new Set(prev); if (v) next.add(posKey); else next.delete(posKey); return next; }); }} /></td>
-                          <td className="px-3 py-2.5 font-bold font-mono">{pos.symbol}</td>
+                          <td className="px-3 py-2.5 font-bold font-mono">{symbolLabel(pos.symbol)}</td>
                           <td className="px-3 py-2.5"><span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={pos.positionSide === "LONG" ? { background: "hsl(162 88% 42% / 0.15)", color: "hsl(162 88% 46%)" } : { background: "hsl(345 88% 58% / 0.15)", color: "hsl(345 88% 62%)" }}>{pos.positionSide === "LONG" ? "▲" : "▼"}</span></td>
                           <td className="px-3 py-2.5 font-mono">{fmt(pos.positionSize, 4)}</td>
                           <td className="px-3 py-2.5 font-mono">{fmt(pos.avgEntryPrice)}</td>
@@ -1211,7 +1225,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
                     return (
                       <tr key={rowKey} style={{ borderBottom: "1px solid hsl(var(--border))", background: isOrderSelected ? "hsl(258 82% 64% / 0.06)" : idx % 2 === 0 ? "transparent" : "hsl(var(--muted) / 0.3)" }}>
                         <td className="px-3 py-2.5"><Checkbox checked={isOrderSelected} disabled={!order.orderId} onCheckedChange={(v) => { if (!order.orderId) return; setSelectedOrders((prev) => { const next = new Set(prev); if (v) next.add(order.orderId!); else next.delete(order.orderId!); return next; }); }} /></td>
-                        <td className="px-3 py-2.5 font-bold font-mono">{order.symbol}</td>
+                        <td className="px-3 py-2.5 font-bold font-mono">{symbolLabel(order.symbol)}</td>
                         <td className="px-3 py-2.5"><span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={order.side === "BUY" ? { background: "hsl(162 88% 42% / 0.15)", color: "hsl(162 88% 46%)" } : { background: "hsl(345 88% 58% / 0.15)", color: "hsl(345 88% 62%)" }}>{order.side}</span></td>
                         <td className="px-3 py-2.5 text-muted-foreground">{order.orderType}</td>
                         <td className="px-3 py-2.5 font-mono">{fmt(order.quantity, 4)}</td>
@@ -1246,7 +1260,7 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
                     return (
                       <tr key={slot.id} style={{ borderBottom: "1px solid hsl(var(--border))", background: isSlotSelected ? "hsl(258 82% 64% / 0.06)" : idx % 2 === 0 ? "transparent" : "hsl(var(--muted) / 0.3)" }}>
                         <td className="px-3 py-2.5"><Checkbox checked={isSlotSelected} onCheckedChange={(v) => { setSelectedSlots((prev) => { const next = new Set(prev); if (v) next.add(slot.id); else next.delete(slot.id); return next; }); }} /></td>
-                        <td className="px-3 py-2.5 font-bold font-mono">{slot.symbol}</td>
+                        <td className="px-3 py-2.5 font-bold font-mono">{symbolLabel(slot.symbol)}</td>
                         <td className="px-3 py-2.5"><span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={slot.side === "BUY" ? { background: "hsl(162 88% 42% / 0.15)", color: "hsl(162 88% 46%)" } : { background: "hsl(345 88% 58% / 0.15)", color: "hsl(345 88% 62%)" }}>{slot.side}</span></td>
                         <td className="px-3 py-2.5 font-mono">{fmt(slot.limitPrice)}</td>
                         <td className="px-3 py-2.5 font-mono text-muted-foreground">{fmt(slot.tpPrice)}</td>
