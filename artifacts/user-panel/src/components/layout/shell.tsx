@@ -6,15 +6,16 @@ import { useAuth } from "@/contexts/auth-context";
 import { PriceTicker } from "@/components/layout/PriceTicker";
 import buySellIconImg from "@/assets/buy-sell-icon.png";
 
-// Desktop sidebar nav (unchanged set, minus Dashboard)
+// Desktop sidebar nav — BUY / SELL first, then the rest
 const NAV_ITEMS = [
+  { href: "/place-order", label: "BUY / SELL", isBuySell: true as const },
   { href: "/orders", label: "Orders", icon: ListOrdered },
   { href: "/positions", label: "Positions", icon: Briefcase },
   { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/profile", label: "Profile", icon: User },
 ];
 
-// Mobile bottom nav: Place Order sits in the middle, elevated
+// Mobile bottom nav: Place Order sits in the middle, elevated (unchanged)
 const MOBILE_NAV_ITEMS = [
   { href: "/orders", label: "Orders", icon: ListOrdered },
   { href: "/positions", label: "Positions", icon: Briefcase },
@@ -57,16 +58,36 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <aside className="hidden lg:flex w-64 flex-col border-r bg-card/50">
           <div className="p-6">
             <h1 className="text-xl font-bold tracking-tight text-primary flex items-center gap-2">
-              <div className="w-6 h-6 rounded bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground text-xs font-bold">W</span>
-              </div>
-              WealthFunds<span className="text-muted-foreground">2x</span>
+              <img src={buySellIconImg} alt="My Trade Study" className="w-8 h-8 rounded-md object-cover" />
+              My Trade Study
             </h1>
           </div>
 
           <nav className="flex-1 px-4 space-y-1">
             {NAV_ITEMS.map((item) => {
               const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+
+              // Special rendering for BUY / SELL at the top
+              if ("isBuySell" in item && item.isBuySell) {
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    )}
+                  >
+                    <img src={buySellIconImg} alt="" className="w-5 h-5 rounded-sm object-cover" />
+                    <BuySellLabel />
+                  </Link>
+                );
+              }
+
+              // Regular nav items (Orders, Positions, Reports, Profile)
+              const Icon = item.icon;
               return (
                 <Link
                   key={item.href}
@@ -78,22 +99,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <item.icon className="w-5 h-5" />
+                  <Icon className="w-5 h-5" />
                   {item.label}
                 </Link>
               );
             })}
           </nav>
-
-          <div className="p-4">
-            <Link
-              href="/place-order"
-              className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-card border border-border hover:bg-accent rounded-lg text-sm font-medium transition-colors"
-            >
-              <img src={buySellIconImg} alt="" className="w-4 h-4 rounded-sm object-cover" />
-              <BuySellLabel />
-            </Link>
-          </div>
         </aside>
 
         {/* Main Content Area */}
