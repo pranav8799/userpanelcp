@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
-import { ListOrdered, Briefcase, BarChart3, User } from "lucide-react";
+import { ListOrdered, Briefcase, BarChart3, User, HistoryIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/auth-context";
 import { PriceTicker } from "@/components/layout/PriceTicker";
@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/place-order", label: "BUY / SELL", isBuySell: true as const },
   { href: "/orders", label: "Orders", icon: ListOrdered },
   { href: "/positions", label: "Positions", icon: Briefcase },
+  { href: "/history", label: "History", icon: HistoryIcon }, // ← new
   { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/profile", label: "Profile", icon: User },
 ];
@@ -20,6 +21,8 @@ const MOBILE_NAV_ITEMS = [
   { href: "/orders", label: "Orders", icon: ListOrdered },
   { href: "/positions", label: "Positions", icon: Briefcase },
   { href: "/place-order", label: "BUY / SELL", icon: BarChart3, isAction: true },
+  // { href: "/history", label: "BUY / SELL", icon: BarChart3, isAction: true },
+
   { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/profile", label: "Profile", icon: User },
 ];

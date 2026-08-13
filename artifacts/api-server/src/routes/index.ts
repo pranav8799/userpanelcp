@@ -12,7 +12,7 @@ import settingsRouter from "./settings.js";
 import marketRouter from "./market.js"; // ← new
 import signupRouter from "./signup.js";     // ← new
 import accountRouter from "./account.js";   // ← new
-
+import historyRouter from "./history.js";   // ← new
 const router: IRouter = Router();
 
 router.use(healthRouter);
@@ -28,5 +28,6 @@ router.use("/leverage", leverageRouter);
 router.use("/margin", marginRouter);
 router.use("/market", marketRouter); // ← mounts as /api/market/price-ticker, /api/market/symbols
 router.use("/settings", settingsRouter);
+router.use("/history", historyRouter); // ← mounts as /api/history, /api/history/symbols, /api/history/log
 
 export default router;

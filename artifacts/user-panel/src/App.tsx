@@ -16,6 +16,7 @@ import Reports from '@/pages/reports';
 import Profile from '@/pages/profile';
 import NotFound from '@/pages/not-found';
 import signup from './pages/signup';
+import History from './pages/history';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,6 +40,7 @@ function Router() {
         <Route path="/place-order" component={PlaceOrder} />
         <Route path="/reports" component={Reports} />
         <Route path="/profile" component={Profile} />
+        <Route path="/history" component={History} />
         <Route component={NotFound} />
       </Switch>
     </Shell>
