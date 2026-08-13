@@ -1,50 +1,34 @@
 // src/lib/repunchStore.ts
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react"; // Make sure this is imported
+import { useSyncExternalStore } from "react";
 import {
   useGetSettings,
   useUpdateSettings,
   getGetSettingsQueryKey,
-  type WatchedSlot as ApiWatchedSlot, // ← Import from API
+  type WatchedSlot as ApiWatchedSlot,
   type OrderInputSide,
 } from "@workspace/api-client-react";
 
-// Extend the generated type with UI-specific fields.
-// `status` is widened to include "queued" — a ladder leg waiting in line
-// for a slot to open up in the concurrency window (see place-order.tsx /
-// repunchEngine.ts). The API type doesn't know about "queued" since it's
-// resolved into "pending_fill" before ever being persisted... except it IS
-// persisted (queued slots sit in watchedSlots until activated), so we widen
-// here rather than assume the generated type covers it.
 export interface WatchedSlot extends ApiWatchedSlot {
   stopped?: boolean;
   seenOpen?: boolean;
   tpOrderId?: string;
   tpSeenOpen?: boolean;
-  repunchCount: number; // ensure this exists
-  batchId?: string; // groups ladder legs placed together, so the engine knows which "queued" leg (pending_fill + no orderId) to activate next
-  // The ladder's buy-diff (step size) in points, copied onto every slot at
-  // creation (entry + ladder legs, live or queued). Needed by the repunch
-  // engine's Phase 2 shift step to know how far past the triggering leg's
-  // price to place the new leg — the engine has no other source of truth
-  // for this once a slot exists.
+  repunchCount: number;
+  batchId?: string;
   stepSize?: number;
-  // Per-trade toggle: when true, the farther half of the batch (by rank —
-  // see totalLegs) trades at 2× baseQty instead of baseQty. Off by default.
-  // Stamped once at creation and shared across every leg in the batch.
   doubleQtyEnabled?: boolean;
-  // The unit qty entered on the ticket — never changes. `quantity` on this
-  // slot holds whatever qty was actually used for this leg's most recent
-  // live placement (baseQty or baseQty*2); baseQty is kept separately so
-  // the engine can always recompute the doubled amount later.
   baseQty?: number;
-  // Fixed leg count for this batch's whole lifetime (numberOfOrders + 1).
-  // The base/double split point (ceil(totalLegs/2)) is derived from this,
-  // not from the batch's current array length, since array length can
-  // temporarily drift during the trim-skipped-because-watching edge case.
   totalLegs?: number;
+  // Multiplier (1–5) applied to stepSize to decide how far the market is
+  // allowed to run away from the topmost tracked leg — while NOTHING in
+  // this batch is currently an open position — before the whole ladder is
+  // scrapped and rebuilt starting from (marketPrice ∓ stepSize*stepSizeIncrement).
+  // Stamped once at creation, same as stepSize, and shared across the batch.
+  stepSizeIncrement?: number;
 }
+
 let autoPunchEnabled = false;
 const listeners = new Set<() => void>();
 

@@ -2,6 +2,7 @@ import { db, settingsTable, accountsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { callCoinswitch, placeOrderForAccount, cancelOrderForAccount } from "../lib/coinswitchApi.js";
 import { decrypt } from "../lib/crypto.js";
+import { logHistoryEvent } from "../lib/history.js";
 
 export interface WatchedSlot {
   id: string;
@@ -18,39 +19,21 @@ export interface WatchedSlot {
   tpSeenOpen?: boolean;
   stopped?: boolean;
   batchId?: string;
-  // Ladder buy-diff in points, copied onto every slot (entry + ladder legs)
-  // at creation time in place-order.tsx. Used by shiftDemoteTrim to know how
-  // far past the triggering leg to place the new shifted leg.
   stepSize?: number;
-  // Per-trade toggle: farther-half legs (by rank, see totalLegs) trade at
-  // 2× baseQty instead of baseQty. Same value on every leg in a batch.
   doubleQtyEnabled?: boolean;
-  // Unit qty entered on the ticket — constant across the whole batch.
-  // `quantity` holds whatever was actually used at this leg's last live
-  // placement; baseQty lets us recompute the doubled amount later.
   baseQty?: number;
-  // Fixed leg count for this batch's whole lifetime (numberOfOrders + 1).
-  // Drives the base/double split point; deliberately NOT derived from the
-  // batch's current array length (which can drift temporarily — see the
-  // trim-skipped-because-watching case in shiftDemoteTrim).
   totalLegs?: number;
+  // Multiplier (1–5) on stepSize — how far price is allowed to run away
+  // from the topmost tracked leg, while nothing in the batch is `watching`,
+  // before the whole ladder is scrapped and rebuilt closer to market.
+  stepSizeIncrement?: number;
 }
 
-/**
- * Determines the qty to use when a leg is about to be freshly placed
- * (initial creation, activation from queue, repunch, or shift).
- *
- * Rank is by price, counted from the leg closest to market outward: for BUY
- * the highest price is rank 0, for SELL the lowest price is rank 0. The
- * first `ceil(totalLegs / 2)` ranks trade at baseQty; the rest at
- * baseQty * 2. Watching legs are included when establishing rank (so every
- * other leg's split stays correct) even though they never get resized
- * themselves — the caller simply never invokes this for a watching leg.
- *
- * `rankBoost` accounts for a shift leg that will land at rank 0 in the same
- * event, before it's actually been pushed into `next` yet — see the Phase 2
- * repunch call site, which passes 1 when its own shift is about to succeed.
- */
+// Mirrors CONCURRENT_LIMIT in place-order.tsx — how many ladder legs stay
+// live/resting at once; the rest sit queued. Kept in sync manually since
+// the frontend and engine don't share a constants file.
+const CONCURRENT_LIMIT = 2;
+
 function computeQtyForRank(
   next: WatchedSlot[],
   batchId: string,
@@ -62,7 +45,7 @@ function computeQtyForRank(
   rankBoost = 0,
 ): number {
   if (!doubleQtyEnabled) return baseQty;
-  if (!totalLegs || totalLegs <= 0) return baseQty; // missing config — fail safe to base
+  if (!totalLegs || totalLegs <= 0) return baseQty;
 
   const prices = next
     .filter((s) => s.batchId === batchId && !s.stopped)
@@ -70,25 +53,14 @@ function computeQtyForRank(
   if (!prices.includes(targetPrice)) prices.push(targetPrice);
 
   const sorted = side === "BUY"
-    ? prices.sort((a, b) => b - a)  // BUY: highest price = rank 0 (closest to market)
-    : prices.sort((a, b) => a - b); // SELL: lowest price = rank 0
+    ? prices.sort((a, b) => b - a)
+    : prices.sort((a, b) => a - b);
 
   const idx = sorted.indexOf(targetPrice) + rankBoost;
   const baseCount = Math.ceil(totalLegs / 2);
   return idx < baseCount ? baseQty : baseQty * 2;
 }
 
-/**
- * doubleQtyEnabled / baseQty / totalLegs are supposed to be identical on
- * every leg in a batch — stamped once at trade creation and carried forward.
- * Rather than trusting only the one slot being acted on (which, if it lost
- * its own copy for any reason — legacy data, a partially-applied edit,
- * corruption — would silently fall back to base qty via computeQtyForRank's
- * fail-safe), look them up from ANY sibling leg in the same batch that
- * still has them. Returns null only if no leg in the whole batch has them
- * (e.g. the batch genuinely predates this feature), in which case callers
- * should leave qty untouched rather than guess.
- */
 function getBatchQtyConfig(
   next: WatchedSlot[],
   batchId: string,
@@ -96,6 +68,23 @@ function getBatchQtyConfig(
   for (const s of next) {
     if (s.batchId === batchId && !s.stopped && s.totalLegs && s.baseQty != null) {
       return { doubleQtyEnabled: !!s.doubleQtyEnabled, baseQty: s.baseQty, totalLegs: s.totalLegs };
+    }
+  }
+  return null;
+}
+
+/**
+ * Pulls stepSize/stepSizeIncrement from ANY sibling leg in the batch, same
+ * resilience reasoning as getBatchQtyConfig — a single leg losing its stamp
+ * shouldn't take down the whole batch's shift/reset behavior.
+ */
+function getBatchLadderConfig(
+  next: WatchedSlot[],
+  batchId: string,
+): { stepSize: number; stepSizeIncrement: number } | null {
+  for (const s of next) {
+    if (s.batchId === batchId && !s.stopped && s.stepSize) {
+      return { stepSize: s.stepSize, stepSizeIncrement: s.stepSizeIncrement && s.stepSizeIncrement > 0 ? s.stepSizeIncrement : 1 };
     }
   }
   return null;
@@ -180,28 +169,38 @@ async function hasOpenPosition(accountId: number, symbol: string, expectedSide: 
 }
 
 /**
- * Activates the next queued ladder leg in the same batch (concurrency window).
- * Called right after an active leg's entry fills, so exactly N legs stay
- * resting on the book at a time (N = CONCURRENT_LIMIT set on the frontend).
- * Mutates `next` in place. Returns true if a slot was activated.
+ * Live last-traded price for a symbol, fetched the same way market.ts does
+ * for the UI ticker — direct CoinSwitch call using this account's own keys,
+ * since the engine already holds `acc` and shouldn't loop back through its
+ * own HTTP API. Returns null on any failure so callers can just skip the
+ * reset check for this tick rather than crash the whole tick.
  */
-async function activateNextQueued(acc: any, next: WatchedSlot[], batchId: string): Promise<string | null> {
-  // A "queued" leg is a pending_fill slot with no orderId yet — this avoids
-  // needing a status enum value the settings schema doesn't recognize.
+async function fetchMarkPrice(acc: any, symbol: string): Promise<number | null> {
+  try {
+    const apiKey = decrypt(acc.apiKey);
+    const secretKey = decrypt(acc.secretKey);
+    const data = (await callCoinswitch("GET", "/trade/api/v2/futures/ticker", apiKey, secretKey, {
+      exchange: "EXCHANGE_2",
+      symbol,
+    })) as { data: Record<string, Record<string, unknown>> };
+    const ticker = data?.data?.["EXCHANGE_2"];
+    const raw = ticker?.last_price ?? ticker?.mark_price;
+    const price = raw != null ? parseFloat(String(raw)) : NaN;
+    return isNaN(price) ? null : price;
+  } catch (err) {
+    console.error(`[repunch] fetchMarkPrice failed for ${symbol}`, err);
+    return null;
+  }
+}
+
+async function activateNextQueued(acc: any, accountId: number, next: WatchedSlot[], batchId: string): Promise<string | null> {
   const idx = next.findIndex((s) => s.batchId === batchId && s.status === "pending_fill" && !s.orderId && !s.stopped);
   if (idx === -1) return null;
   const slot = next[idx];
-  // This queued leg may have been sitting untouched through several shift
-  // events since it was created or last demoted — its rank (and therefore
-  // its base/double qty) can have changed since then. Recompute now, since
-  // activation is a fresh-placement moment. Pull doubleQtyEnabled/baseQty/
-  // totalLegs from any sibling in the batch, not just this slot's own copy
-  // — if this specific slot lost its stamp for any reason, a sibling almost
-  // always still has it.
   const batchCfg = getBatchQtyConfig(next, batchId);
   const qty = batchCfg
     ? computeQtyForRank(next, batchId, slot.side, slot.limitPrice, batchCfg.doubleQtyEnabled, batchCfg.baseQty, batchCfg.totalLegs)
-    : slot.quantity; // no config found anywhere in the batch — leave qty as-is rather than guess
+    : slot.quantity;
   try {
     const result = await placeOrderForAccount(acc, {
       symbol: slot.symbol,
@@ -211,20 +210,26 @@ async function activateNextQueued(acc: any, next: WatchedSlot[], batchId: string
       price: slot.limitPrice,
     });
     next[idx] = { ...slot, status: "pending_fill", orderId: result.order_id, seenOpen: false, quantity: qty };
-    return slot.id; // caller uses this to skip re-checking it in the same tick
+
+    void logHistoryEvent({
+      accountId, slotId: slot.id, batchId, symbol: slot.symbol, side: slot.side,
+      eventType: "queued_activated", limitPrice: slot.limitPrice, tpPrice: slot.tpPrice,
+      quantity: qty, repunchCountAtEvent: slot.repunchCount, orderId: result.order_id,
+    });
+
+    return slot.id;
   } catch (err) {
     console.error(`[repunch] failed to activate queued slot ${slot.id}`, err);
+    void logHistoryEvent({
+      accountId, slotId: slot.id, batchId, symbol: slot.symbol, side: slot.side,
+      eventType: "queued_activated", limitPrice: slot.limitPrice, tpPrice: slot.tpPrice,
+      quantity: qty, repunchCountAtEvent: slot.repunchCount,
+      note: `FAILED: ${(err as Error)?.message ?? "unknown error"}`,
+    });
     return null;
   }
 }
 
-/**
- * Computes what the next shift leg's price/TP would be for a trigger slot,
- * and whether placing it would collide with a price some other tracked leg
- * in the same batch already occupies. Shared between the Phase 2 loop
- * (which needs to know ahead of time, to decide the repunch leg's own rank
- * boost) and shiftDemoteTrim (which does the actual placement).
- */
 function computeShiftTarget(
   next: WatchedSlot[],
   batchId: string,
@@ -242,42 +247,9 @@ function computeShiftTarget(
   return { newPrice, newTp, willCollide };
 }
 
-/**
- * Runs the "shift + demote + trim + rebalance" side effects that accompany
- * a repunch, per the sliding-window ladder strategy:
- *
- *  1. SHIFT      — place a brand-new leg one stepSize further from the
- *                  triggering leg's price (never queued — always placed
- *                  live).
- *  2. DEMOTE     — among this batch's currently-*live* resting legs
- *                  (excluding the just-placed shift leg), cancel the one
- *                  furthest from the shift direction (lowest price for BUY,
- *                  highest for SELL) and flip it back to queued (orderId
- *                  cleared, stays pending_fill).
- *  3. TRIM       — among ALL of this batch's tracked legs (any status),
- *                  find the overall bottom-most by price. If it is
- *                  pending_fill (live or queued), cancel any live order and
- *                  remove it entirely, so the total leg count stays
- *                  constant. If it is "watching" (an open position — can't
- *                  be cancelled), trimming is skipped for this cycle; the
- *                  chain temporarily grows by one leg until that watching
- *                  leg resolves on its own and something eligible reaches
- *                  the bottom.
- *  4. REBALANCE  — shift+trim change every remaining leg's *relative* rank
- *                  (rank is derived dynamically from sorted price position,
- *                  never stored). A live-resting leg whose rank crosses the
- *                  base/double boundary as a side effect of steps 1–3 keeps
- *                  whatever quantity it was last placed with, which is now
- *                  wrong for its new rank. Walk every live-resting leg in
- *                  the batch (other than the shift leg, which is already
- *                  correct) and cancel+re-place any whose current-rank qty
- *                  no longer matches what's resting on the exchange.
- *
- * Mutates `next` in place. Returns the array index that was removed by trim
- * (if any), so the caller can correct its own loop index.
- */
 async function shiftDemoteTrim(
   acc: any,
+  accountId: number,
   next: WatchedSlot[],
   triggerSlot: WatchedSlot,
   batchId: string,
@@ -291,25 +263,10 @@ async function shiftDemoteTrim(
   const { newPrice, newTp, willCollide } = target;
 
   if (willCollide) {
-    // Guard against placing a duplicate order on top of a leg that already
-    // occupies this price (any status — live, queued, or watching). Easy to
-    // hit with a small stepSize: consecutive repunch cycles can shift the
-    // window onto a price another leg in the same batch already holds.
-    console.warn(
-      `[repunch] shift skipped for batch ${batchId}: price ${newPrice} already tracked (anchor ${triggerSlot.id})`,
-    );
-    // Skip demote/trim/rebalance too — no new leg was added, so ranks
-    // haven't actually shifted. We'll try again next cycle once the window
-    // has moved further.
+    console.warn(`[repunch] shift skipped for batch ${batchId}: price ${newPrice} already tracked (anchor ${triggerSlot.id})`);
     return { trimmedIndex: null };
   }
 
-  // ── 1. SHIFT ──────────────────────────────────────────────────────────
-  // The shift leg always lands at rank 0 (it's by definition the newest,
-  // closest-to-market leg — nothing can be nearer at the moment it's
-  // placed), so its qty is independent of whatever triggerSlot's own qty
-  // happens to be right now. Pull config from any sibling in the batch,
-  // not just triggerSlot, for the same resilience reason as activation.
   const batchCfg = getBatchQtyConfig(next, batchId);
   const shiftQty = batchCfg
     ? computeQtyForRank(next, batchId, triggerSlot.side, newPrice, batchCfg.doubleQtyEnabled, batchCfg.baseQty, batchCfg.totalLegs)
@@ -317,43 +274,38 @@ async function shiftDemoteTrim(
   let shiftLegId: string;
   try {
     const result = await placeOrderForAccount(acc, {
-      symbol: triggerSlot.symbol,
-      side: triggerSlot.side,
-      order_type: "LIMIT",
-      quantity: shiftQty,
-      price: newPrice,
+      symbol: triggerSlot.symbol, side: triggerSlot.side, order_type: "LIMIT",
+      quantity: shiftQty, price: newPrice,
     });
     shiftLegId = `${triggerSlot.symbol}-${triggerSlot.side}-${newPrice}-${Date.now()}-shift`;
     next.push({
-      id: shiftLegId,
-      symbol: triggerSlot.symbol,
-      side: triggerSlot.side,
-      limitPrice: newPrice,
-      tpPrice: newTp,
-      quantity: shiftQty,
-      repunchCount: 0,
-      status: "pending_fill",
-      orderId: result.order_id,
-      seenOpen: false,
-      batchId,
+      id: shiftLegId, symbol: triggerSlot.symbol, side: triggerSlot.side,
+      limitPrice: newPrice, tpPrice: newTp, quantity: shiftQty, repunchCount: 0,
+      status: "pending_fill", orderId: result.order_id, seenOpen: false, batchId,
       stepSize: triggerSlot.stepSize,
+      stepSizeIncrement: triggerSlot.stepSizeIncrement,
       doubleQtyEnabled: batchCfg?.doubleQtyEnabled ?? triggerSlot.doubleQtyEnabled,
       baseQty: batchCfg?.baseQty ?? triggerSlot.baseQty ?? triggerSlot.quantity,
       totalLegs: batchCfg?.totalLegs ?? triggerSlot.totalLegs,
     });
+
+    void logHistoryEvent({
+      accountId, slotId: shiftLegId, batchId, symbol: triggerSlot.symbol, side: triggerSlot.side,
+      eventType: "shifted", limitPrice: newPrice, tpPrice: newTp, quantity: shiftQty,
+      repunchCountAtEvent: 0, orderId: result.order_id,
+      note: `shifted from anchor ${triggerSlot.id} @ ${triggerSlot.limitPrice}`,
+    });
   } catch (err) {
     console.error(`[repunch] shift failed for batch ${batchId} (anchor ${triggerSlot.id})`, err);
-    return { trimmedIndex: null }; // nothing new was added — don't demote/trim/rebalance either
+    void logHistoryEvent({
+      accountId, slotId: `${triggerSlot.id}-shift-failed`, batchId, symbol: triggerSlot.symbol,
+      side: triggerSlot.side, eventType: "shifted", limitPrice: newPrice, tpPrice: newTp,
+      quantity: shiftQty, repunchCountAtEvent: 0,
+      note: `FAILED: ${(err as Error)?.message ?? "unknown error"}`,
+    });
+    return { trimmedIndex: null };
   }
 
-  // ── 2. DEMOTE ─────────────────────────────────────────────────────────
-  // Candidates: same batch, currently live-resting (pending_fill + orderId),
-  // not stopped, excluding the shift leg we just placed (it can't be the
-  // thing we immediately cancel). We do NOT need to special-case the
-  // trigger slot by id: it was just repunched at its own original price,
-  // which under normal upward (BUY) / downward (SELL) trending conditions
-  // is never the "bottom" of the resting group. If your ladder can fire
-  // out of price order, revisit this assumption.
   const isLiveResting = (s: WatchedSlot) =>
     s.batchId === batchId && s.status === "pending_fill" && !!s.orderId && !s.stopped && s.id !== shiftLegId;
 
@@ -362,8 +314,8 @@ async function shiftDemoteTrim(
     if (!isLiveResting(next[j])) continue;
     if (demoteIdx === -1) { demoteIdx = j; continue; }
     const isFurther = dir === 1
-      ? next[j].limitPrice < next[demoteIdx].limitPrice   // BUY: lowest price
-      : next[j].limitPrice > next[demoteIdx].limitPrice;  // SELL: highest price
+      ? next[j].limitPrice < next[demoteIdx].limitPrice
+      : next[j].limitPrice > next[demoteIdx].limitPrice;
     if (isFurther) demoteIdx = j;
   }
 
@@ -372,16 +324,16 @@ async function shiftDemoteTrim(
     try {
       await cancelOrderForAccount(acc, demoteSlot.orderId!);
       next[demoteIdx] = { ...demoteSlot, orderId: undefined, seenOpen: false };
+      void logHistoryEvent({
+        accountId, slotId: demoteSlot.id, batchId, symbol: demoteSlot.symbol, side: demoteSlot.side,
+        eventType: "demoted", limitPrice: demoteSlot.limitPrice, tpPrice: demoteSlot.tpPrice,
+        quantity: demoteSlot.quantity, repunchCountAtEvent: demoteSlot.repunchCount,
+      });
     } catch (err) {
-      // If the cancel call fails we don't know the true state of the order
-      // on the exchange — leave it alone and retry demotion next tick
-      // rather than risk a duplicate/mismatched local state.
       console.error(`[repunch] demote cancel failed for slot ${demoteSlot.id}`, err);
     }
   }
 
-  // ── 3. TRIM ───────────────────────────────────────────────────────────
-  // Bottom-most leg of the WHOLE batch (any status), by price.
   let bottomIdx = -1;
   for (let j = 0; j < next.length; j++) {
     const s = next[j];
@@ -403,60 +355,190 @@ async function shiftDemoteTrim(
           await cancelOrderForAccount(acc, bottomSlot.orderId);
         } catch (err) {
           console.error(`[repunch] trim cancel failed for slot ${bottomSlot.id}`, err);
-          // Order state on the exchange is now uncertain for this slot —
-          // still remove it locally rather than leaving a possibly-orphaned
-          // live order untracked; cancel_all / manual cleanup is the backstop.
         }
       }
+      void logHistoryEvent({
+        accountId, slotId: bottomSlot.id, batchId, symbol: bottomSlot.symbol, side: bottomSlot.side,
+        eventType: "trimmed", limitPrice: bottomSlot.limitPrice, tpPrice: bottomSlot.tpPrice,
+        quantity: bottomSlot.quantity, repunchCountAtEvent: bottomSlot.repunchCount,
+        note: "removed to keep ladder size constant",
+      });
       next.splice(bottomIdx, 1);
       trimmedIndex = bottomIdx;
     }
-    // If bottomSlot.status === "watching": can't cancel an open position —
-    // trimming is skipped for this cycle (Option B). We still fall through
-    // to rebalance below, since shift/demote already happened and ranks
-    // already moved regardless of whether trim itself fired.
   }
 
-  // ── 4. REBALANCE ─────────────────────────────────────────────────────
-  // Shift+trim silently changed every other live-resting leg's rank (rank
-  // is derived dynamically from sorted price position, never stored).
-  // A leg whose rank crossed the base/double boundary as a side effect of
-  // steps 1–3 keeps whatever quantity it was last placed with — which may
-  // now be wrong. Walk every live-resting leg in the batch (other than the
-  // shift leg, already correct) and cancel+re-place any whose recomputed
-  // qty no longer matches what's resting on the exchange.
   if (batchCfg?.doubleQtyEnabled) {
     for (let j = 0; j < next.length; j++) {
       const s = next[j];
       if (s.batchId !== batchId || s.stopped) continue;
       if (s.status !== "pending_fill" || !s.orderId) continue;
-      if (s.id === shiftLegId) continue; // just placed, already correct
+      if (s.id === shiftLegId) continue;
 
-      const correctQty = computeQtyForRank(
-        next, batchId, s.side, s.limitPrice,
-        batchCfg.doubleQtyEnabled, batchCfg.baseQty, batchCfg.totalLegs,
-      );
-      if (correctQty === s.quantity) continue; // rank didn't cross the boundary
+      const correctQty = computeQtyForRank(next, batchId, s.side, s.limitPrice, batchCfg.doubleQtyEnabled, batchCfg.baseQty, batchCfg.totalLegs);
+      if (correctQty === s.quantity) continue;
 
       try {
         await cancelOrderForAccount(acc, s.orderId);
         const result = await placeOrderForAccount(acc, {
-          symbol: s.symbol,
-          side: s.side,
-          order_type: "LIMIT",
-          quantity: correctQty,
-          price: s.limitPrice,
+          symbol: s.symbol, side: s.side, order_type: "LIMIT", quantity: correctQty, price: s.limitPrice,
         });
+        const oldQty = s.quantity;
         next[j] = { ...s, orderId: result.order_id, seenOpen: false, quantity: correctQty };
+        void logHistoryEvent({
+          accountId, slotId: s.id, batchId, symbol: s.symbol, side: s.side,
+          eventType: "rebalanced", limitPrice: s.limitPrice, tpPrice: s.tpPrice, quantity: correctQty,
+          repunchCountAtEvent: s.repunchCount, orderId: result.order_id,
+          note: `qty corrected ${oldQty} → ${correctQty} (rank crossed base/double boundary)`,
+        });
       } catch (err) {
         console.error(`[repunch] rebalance re-place failed for slot ${s.id}`, err);
-        // Leave local state as-is; the next shift/demote/trim cycle for
-        // this batch will attempt the same correction again.
       }
     }
   }
 
   return { trimmedIndex };
+}
+
+/**
+ * PHASE 0 — ladder reset ("chase") check.
+ *
+ * Only relevant while a batch has ZERO legs in `watching` status (i.e. no
+ * open position from this batch right now) — the moment anything fills,
+ * this stops entirely and normal shift/demote/trim behavior takes over.
+ *
+ * While nothing is open: if the live market price has run further from the
+ * topmost (closest-to-market) tracked leg than stepSize * stepSizeIncrement,
+ * the entire chain for that batch is scrapped — every live order cancelled,
+ * every tracked leg (resting or queued) dropped — and rebuilt from scratch
+ * starting at (marketPrice ∓ stepSize*stepSizeIncrement), same spacing,
+ * same total leg count, same batchId, same qty config. This can fire
+ * repeatedly if price keeps running after a reset.
+ *
+ * Mutates `next` in place. Returns true if a reset happened (so the caller
+ * knows to mark the row dirty / persist).
+ */
+async function resetChainIfNeeded(
+  acc: any,
+  accountId: number,
+  next: WatchedSlot[],
+  batchId: string,
+): Promise<boolean> {
+  const batchLegs = next.filter((s) => s.batchId === batchId && !s.stopped);
+  if (batchLegs.length === 0) return false;
+
+  // If ANY leg in this batch is currently an open position, the chase
+  // mechanism is dormant — normal engine behavior owns this batch.
+  if (batchLegs.some((s) => s.status === "watching")) return false;
+
+  const ladderCfg = getBatchLadderConfig(next, batchId);
+  if (!ladderCfg || ladderCfg.stepSizeIncrement <= 1) return false; // no increment configured — nothing to do
+
+  const anchor = batchLegs[0];
+  const threshold = ladderCfg.stepSize * ladderCfg.stepSizeIncrement;
+
+  const markPrice = await fetchMarkPrice(acc, anchor.symbol);
+  if (markPrice == null) return false; // couldn't get a price this tick — try again next tick
+
+  // Topmost = closest-to-market tracked leg: highest price for BUY, lowest for SELL.
+  const topmostLeg = batchLegs.reduce((top, s) =>
+    anchor.side === "BUY"
+      ? (s.limitPrice > top.limitPrice ? s : top)
+      : (s.limitPrice < top.limitPrice ? s : top),
+  );
+
+  const gap = anchor.side === "BUY"
+    ? markPrice - topmostLeg.limitPrice
+    : topmostLeg.limitPrice - markPrice;
+
+  if (gap <= threshold) return false; // still within normal range — no reset needed
+
+  // ── RESET ────────────────────────────────────────────────────────────
+  const batchCfg = getBatchQtyConfig(next, batchId);
+  const totalLegs = batchCfg?.totalLegs ?? batchLegs.length;
+  const baseQty = batchCfg?.baseQty ?? topmostLeg.quantity;
+  const doubleQtyEnabled = batchCfg?.doubleQtyEnabled ?? false;
+  const stepSize = ladderCfg.stepSize;
+  const tpOffset = Math.abs(anchor.tpPrice - anchor.limitPrice);
+  const dir = anchor.side === "BUY" ? 1 : -1;
+
+  console.warn(
+    `[repunch] ladder reset for batch ${batchId}: gap ${gap.toFixed(4)} > threshold ${threshold.toFixed(4)} ` +
+    `(mark ${markPrice}, old top ${topmostLeg.limitPrice}) — rebuilding from ${(markPrice - dir * threshold).toFixed(4)}`,
+  );
+
+  // 1) Cancel every live order in this batch, then drop every tracked leg
+  //    (resting or queued) for this batch from `next`. Log each removed
+  //    leg's FINAL repunchCount before it disappears from live state.
+  for (const s of batchLegs) {
+    if (s.status === "pending_fill" && s.orderId) {
+      try {
+        await cancelOrderForAccount(acc, s.orderId);
+      } catch (err) {
+        console.error(`[repunch] reset: cancel failed for slot ${s.id}`, err);
+      }
+    }
+    void logHistoryEvent({
+      accountId, slotId: s.id, batchId, symbol: s.symbol, side: s.side,
+      eventType: "ladder_reset", limitPrice: s.limitPrice, tpPrice: s.tpPrice,
+      quantity: s.quantity, repunchCountAtEvent: s.repunchCount, orderId: s.orderId,
+      note: `chain reset — market ran to ${markPrice}, gap ${gap.toFixed(4)} exceeded threshold ${threshold.toFixed(4)}`,
+    });
+  }
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (next[i].batchId === batchId && !next[i].stopped) next.splice(i, 1);
+  }
+
+  // 2) Rebuild the ladder from (markPrice ∓ threshold), same spacing,
+  //    same total leg count, same batchId — mirrors runAutoPunch's
+  //    original creation logic (first CONCURRENT_LIMIT legs live, rest queued).
+  const newTop = markPrice - dir * threshold;
+  const rebuilt: WatchedSlot[] = [];
+
+  for (let rank = 0; rank < totalLegs; rank++) {
+    const legPrice = newTop - dir * stepSize * rank;
+    const legTp = legPrice + dir * tpOffset;
+    const qty = computeQtyForRank(
+      [...next, ...rebuilt], batchId, anchor.side, legPrice, doubleQtyEnabled, baseQty, totalLegs,
+    );
+    const legId = `${anchor.symbol}-${anchor.side}-${legPrice}-${Date.now()}-reset${rank}`;
+
+    if (rank < CONCURRENT_LIMIT) {
+      try {
+        const result = await placeOrderForAccount(acc, {
+          symbol: anchor.symbol, side: anchor.side, order_type: "LIMIT", quantity: qty, price: legPrice,
+        });
+        rebuilt.push({
+          id: legId, symbol: anchor.symbol, side: anchor.side, limitPrice: legPrice, tpPrice: legTp,
+          quantity: qty, repunchCount: 0, status: "pending_fill", orderId: result.order_id, seenOpen: false,
+          batchId, stepSize, stepSizeIncrement: ladderCfg.stepSizeIncrement,
+          doubleQtyEnabled, baseQty, totalLegs,
+        });
+        void logHistoryEvent({
+          accountId, slotId: legId, batchId, symbol: anchor.symbol, side: anchor.side,
+          eventType: "entry_placed", limitPrice: legPrice, tpPrice: legTp, quantity: qty,
+          repunchCountAtEvent: 0, orderId: result.order_id, note: "placed by ladder reset",
+        });
+      } catch (err) {
+        console.error(`[repunch] reset: failed to place rebuilt leg at ${legPrice}`, err);
+      }
+    } else {
+      rebuilt.push({
+        id: legId, symbol: anchor.symbol, side: anchor.side, limitPrice: legPrice, tpPrice: legTp,
+        quantity: qty, repunchCount: 0, status: "pending_fill", batchId,
+        stepSize, stepSizeIncrement: ladderCfg.stepSizeIncrement,
+        doubleQtyEnabled, baseQty, totalLegs,
+      });
+      void logHistoryEvent({
+        accountId, slotId: legId, batchId, symbol: anchor.symbol, side: anchor.side,
+        eventType: "queued", limitPrice: legPrice, tpPrice: legTp, quantity: qty,
+        repunchCountAtEvent: 0, note: "queued by ladder reset",
+      });
+    }
+  }
+
+  next.push(...rebuilt);
+  return true;
 }
 
 async function tickForAccount(row: SettingsRow) {
@@ -467,14 +549,16 @@ async function tickForAccount(row: SettingsRow) {
   const acc = await getAccount(accountId);
   if (!acc) return;
 
+  // ── PHASE 0: ladder reset check, once per unique batch ─────────────────
+  const batchIds = Array.from(new Set(next.filter((s) => s.batchId && !s.stopped).map((s) => s.batchId!)));
+  for (const batchId of batchIds) {
+    const didReset = await resetChainIfNeeded(acc, accountId, next, batchId);
+    if (didReset) changed = true;
+  }
+
   const needsOrders = next.some((s) => s.status === "pending_fill" || s.status === "watching");
   const openIds = needsOrders ? await fetchOpenOrderIds(accountId) : null;
 
-  // Slots activated by activateNextQueued during this tick — skip re-checking
-  // them below, since a brand-new order can never legitimately be "filled"
-  // in the same tick it was placed. Without this guard, a pre-existing open
-  // position for the same symbol/side (e.g. from the entry leg already
-  // having filled) gets misread as proof the new order filled instantly.
   const activatedThisTick = new Set<string>();
 
   // Phase 1: entry limit filled → place TP exit limit
@@ -483,42 +567,45 @@ async function tickForAccount(row: SettingsRow) {
     if (slot.stopped) continue;
     if (activatedThisTick.has(slot.id)) continue;
     if (slot.status !== "pending_fill" || !slot.orderId) continue;
-    if (!openIds) continue; // fetch failed this tick, retry next tick
+    if (!openIds) continue;
 
     if (openIds.has(slot.orderId)) {
       if (!slot.seenOpen) { next[i] = { ...slot, seenOpen: true }; changed = true; }
       continue;
     }
 
-    // Order isn't resting on the book anymore. Check the position FIRST,
-    // regardless of seenOpen — an order can fill instantly before we ever
-    // get a chance to observe it resting open. Only fall back to seenOpen
-    // to decide "cancelled" vs "still being placed", never to decide "filled".
     const expectedSide = slot.side === "BUY" ? "LONG" : "SHORT";
     const filled = await hasOpenPosition(accountId, slot.symbol, expectedSide);
-    if (filled === null) continue; // fetch failed, retry next tick
+    if (filled === null) continue;
 
     if (!filled) {
-      if (!slot.seenOpen) continue; // never seen open + no position — might not be registered yet, wait
-      next.splice(i, 1); i--; changed = true; // was open, now gone, no position — cancelled/rejected
+      if (!slot.seenOpen) continue;
+      void logHistoryEvent({
+        accountId, slotId: slot.id, batchId: slot.batchId, symbol: slot.symbol, side: slot.side,
+        eventType: "trimmed", limitPrice: slot.limitPrice, tpPrice: slot.tpPrice, quantity: slot.quantity,
+        repunchCountAtEvent: slot.repunchCount, orderId: slot.orderId,
+        note: "cancelled/rejected on exchange (order disappeared without a fill)",
+      });
+      next.splice(i, 1); i--; changed = true;
       continue;
     }
 
     try {
       const result = await placeOrderForAccount(acc, {
-        symbol: slot.symbol,
-        side: slot.side === "BUY" ? "SELL" : "BUY",
-        order_type: "LIMIT",
-        quantity: slot.quantity,
-        price: slot.tpPrice,
-        reduce_only: true,
+        symbol: slot.symbol, side: slot.side === "BUY" ? "SELL" : "BUY", order_type: "LIMIT",
+        quantity: slot.quantity, price: slot.tpPrice, reduce_only: true,
       });
       next[i] = { ...slot, status: "watching", tpOrderId: result.order_id, tpSeenOpen: false, orderId: undefined, seenOpen: false };
       changed = true;
 
-      // This entry just filled — release the next queued ladder leg in the same batch, if any.
+      void logHistoryEvent({
+        accountId, slotId: slot.id, batchId: slot.batchId, symbol: slot.symbol, side: slot.side,
+        eventType: "entry_filled", limitPrice: slot.limitPrice, tpPrice: slot.tpPrice, quantity: slot.quantity,
+        repunchCountAtEvent: slot.repunchCount, orderId: result.order_id,
+      });
+
       if (slot.batchId) {
-        const activatedId = await activateNextQueued(acc, next, slot.batchId);
+        const activatedId = await activateNextQueued(acc, accountId, next, slot.batchId);
         if (activatedId) { changed = true; activatedThisTick.add(activatedId); }
       }
     } catch (err) {
@@ -526,11 +613,7 @@ async function tickForAccount(row: SettingsRow) {
     }
   }
 
-  // Phase 2: TP exit filled → repunch (self) + shift (new leg) + demote
-  // (cancel current bottom-resting → queued) + trim (drop overall bottom leg
-  // if it's cancellable, to keep total leg count constant) + rebalance
-  // (re-place any live-resting leg whose rank crossed the base/double
-  // boundary as a result of the shift/trim).
+  // Phase 2: TP exit filled → repunch + shift + demote + trim + rebalance
   for (let i = 0; i < next.length; i++) {
     const slot = next[i];
     if (slot.stopped) continue;
@@ -544,14 +627,6 @@ async function tickForAccount(row: SettingsRow) {
     if (!slot.tpSeenOpen) continue;
 
     try {
-      // Repunch and shift are one event: if a shift leg is about to land
-      // ahead of this one (same batch, no price collision), this leg's own
-      // rank moves out by exactly one place. Its repunch qty needs to
-      // reflect that final rank, not its pre-event one, else a leg sitting
-      // right at the base/double boundary gets the wrong amount for the
-      // entire time it's live. Config comes from any sibling in the batch,
-      // not just this slot's own copy, for the same resilience reason as
-      // activation and shift.
       const shiftTarget = slot.batchId ? computeShiftTarget(next, slot.batchId, slot) : null;
       const willShift = !!shiftTarget && !shiftTarget.willCollide;
       const batchCfg = slot.batchId ? getBatchQtyConfig(next, slot.batchId) : null;
@@ -560,31 +635,29 @@ async function tickForAccount(row: SettingsRow) {
         : slot.quantity;
 
       const result = await placeOrderForAccount(acc, {
-        symbol: slot.symbol,
-        side: slot.side,
-        order_type: "LIMIT",
-        quantity: repunchQty,
-        price: slot.limitPrice,
+        symbol: slot.symbol, side: slot.side, order_type: "LIMIT", quantity: repunchQty, price: slot.limitPrice,
       });
       const repunchedSlot: WatchedSlot = {
-        ...slot,
-        status: "pending_fill",
-        orderId: result.order_id,
-        seenOpen: false,
-        tpOrderId: undefined,
-        tpSeenOpen: false,
-        repunchCount: slot.repunchCount + 1,
-        quantity: repunchQty,
+        ...slot, status: "pending_fill", orderId: result.order_id, seenOpen: false,
+        tpOrderId: undefined, tpSeenOpen: false, repunchCount: slot.repunchCount + 1, quantity: repunchQty,
       };
       next[i] = repunchedSlot;
       changed = true;
 
+      void logHistoryEvent({
+        accountId, slotId: slot.id, batchId: slot.batchId, symbol: slot.symbol, side: slot.side,
+        eventType: "tp_filled", limitPrice: slot.limitPrice, tpPrice: slot.tpPrice, quantity: slot.quantity,
+        repunchCountAtEvent: slot.repunchCount, orderId: slot.tpOrderId,
+      });
+      void logHistoryEvent({
+        accountId, slotId: slot.id, batchId: slot.batchId, symbol: slot.symbol, side: slot.side,
+        eventType: "repunched", limitPrice: repunchedSlot.limitPrice, tpPrice: repunchedSlot.tpPrice,
+        quantity: repunchQty, repunchCountAtEvent: repunchedSlot.repunchCount, orderId: result.order_id,
+      });
+
       if (slot.batchId) {
-        const { trimmedIndex } = await shiftDemoteTrim(acc, next, repunchedSlot, slot.batchId);
+        const { trimmedIndex } = await shiftDemoteTrim(acc, accountId, next, repunchedSlot, slot.batchId);
         changed = true;
-        // trim can splice out an element anywhere in the array (not just at
-        // i, unlike Phase 1's own-slot removal) — correct our loop index so
-        // we don't skip whatever now sits at position i+1.
         if (trimmedIndex !== null && trimmedIndex <= i) i--;
       }
     } catch (err) {
@@ -600,9 +673,6 @@ async function tick() {
   running = true;
   try {
     const rows = await loadAllSettingsRows();
-    // Run accounts sequentially to avoid hammering CoinSwitch with bursts
-    // across many accounts at once; each account's own calls are already
-    // sequential within tickForAccount.
     for (const row of rows) {
       await tickForAccount(row);
     }
@@ -617,6 +687,11 @@ export function startRepunchEngine() {
   console.log(`[repunch] engine started — polling every ${POLL_INTERVAL_MS}ms`);
   setInterval(() => { void tick(); }, POLL_INTERVAL_MS);
 }
+
+
+
+
+
 
 
 // **************************************************************10/08/2026*************************************************************

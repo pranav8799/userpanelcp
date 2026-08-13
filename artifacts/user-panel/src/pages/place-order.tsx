@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/contexts/auth-context";
+import { logHistoryEvents } from "@/lib/historyApi";
 import { repunchStore, useWatchedSlots, useSetWatchedSlots, type WatchedSlot } from "@/lib/repunchStore";
 import {
   useGetBalance,
@@ -47,6 +49,7 @@ interface AutoPunchConfig {
   orderCount: number;
   stepSize: number;
   tpPoints: number;
+  stepSizeIncrement: number;
 }
 
 type ConfirmState =
@@ -62,6 +65,7 @@ type ConfirmState =
   | { type: "repunch_remove_selected"; count: number }
   | { type: "repunch_clear_all"; count: number }
   | { type: "save_and_place" }
+  | { type: "double_qty_toggle"; enabling: boolean }
   | null;
 
 interface PositionFilters { search: string; side: "ALL" | "LONG" | "SHORT"; pnl: "ALL" | "PROFIT" | "LOSS"; }
@@ -265,6 +269,15 @@ function ConfirmDialog({ state, onConfirm, onCancel }: { state: ConfirmState; on
     repunch_remove_selected: { title: "Remove Selected", desc: state.type === "repunch_remove_selected" ? `Remove ${state.count} selected slot${state.count !== 1 ? "s" : ""}?` : "", label: "Remove Selected" },
     repunch_clear_all: { title: "Clear Re-punch Monitor", desc: state.type === "repunch_clear_all" ? `Remove all ${state.count} slot${state.count !== 1 ? "s" : ""}?` : "", label: "Clear All" },
     save_and_place: { title: "Place Order", desc: "Save this as your default configuration and place the order now?", label: "Yes, Place Order" },
+    double_qty_toggle: {
+      title: state.type === "double_qty_toggle" && state.enabling ? "Enable Double Qty" : "Disable Double Qty",
+      desc: state.type === "double_qty_toggle"
+        ? (state.enabling
+            ? "The far half of the ladder will trade at 2× quantity. This increases margin usage and risk. Continue?"
+            : "Turn off double quantity for the far half of the ladder?")
+        : "",
+      label: state.type === "double_qty_toggle" && state.enabling ? "Yes, Enable" : "Yes, Disable",
+    },
   }[state.type] as { title: string; desc: string; label: string };
 
   return (
@@ -413,6 +426,7 @@ function MobileRepunchModal({
 /* ═══════════════════════════════════ Main ═══════════════════════════════════ */
 export default function PlaceOrder() {
   const { toast } = useToast();
+  const { account } = useAuth();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
 
@@ -426,6 +440,7 @@ export default function PlaceOrder() {
   const [numberOfOrders, setNumberOfOrders] = useState("");         // 6. number of orders
   const [stepSize, setStepSize] = useState("");                    // 7. buy diff (step size)
   const [takeProfit, setTakeProfit] = useState("");                // 8. take profit (points)
+  const [stepSizeIncrement, setStepSizeIncrement] = useState("2"); // 8c. chase-reset multiplier (1-5), default 2
   const [doubleQtyEnabled, setDoubleQtyEnabled] = useState(false); // 8b. double qty for far half — per-trade, default off
   // 9. available balance — rendered from useGetBalance()
   const [usdInrRate, setUsdInrRate] = useState<number>(87.5); // fallback until live rate loads
@@ -487,6 +502,7 @@ export default function PlaceOrder() {
       setNumberOfOrders(String(serverConfig.orderCount));
       setStepSize(String(serverConfig.stepSize));
       setTakeProfit(String(serverConfig.tpPoints));
+      if (serverConfig.stepSizeIncrement) setStepSizeIncrement(String(serverConfig.stepSizeIncrement));
       setDefaultsLoaded(true);
     }
   }, [serverConfig, defaultsLoaded]);
@@ -545,6 +561,12 @@ export default function PlaceOrder() {
     const baseCount = Math.ceil(totalLegs / 2);
     const qtyForRank = (rank: number) =>
       doubleQtyEnabled && rank >= baseCount ? baseQty * 2 : baseQty;
+    // Clamp 1-5, default 2, stamped once on the whole batch — same treatment
+    // as stepSize. Governs the "chase reset" in repunchEngine.ts's
+    // resetChainIfNeeded: while nothing in this batch is a live position,
+    // if price runs stepSize*stepSizeIncrement away from the topmost
+    // tracked leg, the whole chain gets scrapped and rebuilt closer to market.
+    const stepSizeIncrementClamped = Math.max(1, cfg.stepSizeIncrement || 2);
 
     // Entry leg — placed immediately, not part of the ladder concurrency window.
     if (entryLeg) {
@@ -562,6 +584,7 @@ export default function PlaceOrder() {
         seenOpen: false,
         batchId,
         stepSize: cfg.stepSize,
+        stepSizeIncrement: stepSizeIncrementClamped,
         doubleQtyEnabled,
         baseQty,
         totalLegs,
@@ -602,6 +625,7 @@ export default function PlaceOrder() {
             seenOpen: false,
             batchId,
             stepSize: cfg.stepSize,
+            stepSizeIncrement: stepSizeIncrementClamped,
             doubleQtyEnabled,
             baseQty,
             totalLegs,
@@ -626,6 +650,7 @@ export default function PlaceOrder() {
           status: "pending_fill",
           batchId,
           stepSize: cfg.stepSize,
+          stepSizeIncrement: stepSizeIncrementClamped,
           doubleQtyEnabled,
           baseQty,
           totalLegs,
@@ -636,7 +661,25 @@ export default function PlaceOrder() {
     if (newSlots.length > 0) {
       setWatchedSlots((prev) => [...prev, ...newSlots]);
       setRightTab("repunch");
-    }
+
+      if (account?.id) {
+        void logHistoryEvents(
+          newSlots.map((s) => ({
+            accountId: account.id,
+            slotId: s.id,
+            batchId: s.batchId,
+            symbol: s.symbol,
+            side: s.side,
+            eventType: s.orderId ? "entry_placed" : "queued",
+            limitPrice: s.limitPrice,
+            tpPrice: s.tpPrice,
+            quantity: s.quantity,
+            repunchCountAtEvent: 0,
+            orderId: s.orderId,
+          })),
+        );
+      }
+    }   
 
     setIsPunching(false);
 
@@ -679,15 +722,20 @@ export default function PlaceOrder() {
       if (!ep || isNaN(ep)) {
         toast({ title: "Ladder skipped", description: "Enter a price so the ladder knows where to place limit orders.", variant: "destructive" });
       } else {
-        void runAutoPunch(symbol.toUpperCase(), side, ep, baseQty, { orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum }, { orderId: result.orderId }, doubleQtyEnabled);
+        const stepSizeIncrementNum = Math.max(1, parseInt(stepSizeIncrement) || 2);
+        void runAutoPunch(symbol.toUpperCase(), side, ep, baseQty, { orderCount, stepSize: stepSizeNum, tpPoints: tpPointsNum, stepSizeIncrement: stepSizeIncrementNum }, { orderId: result.orderId }, doubleQtyEnabled);
       }
     }
     void refetchOrders();
     void refetchPositions();
-  }, [symbol, quantity, price, side, orderType, numberOfOrders, stepSize, takeProfit, doubleQtyEnabled, runAutoPunch, toast, refetchOrders, refetchPositions]);
-
+  }, [symbol, quantity, price, side, orderType, numberOfOrders, stepSize, takeProfit, stepSizeIncrement, doubleQtyEnabled, runAutoPunch, toast, refetchOrders, refetchPositions]);
   const handleSaveDefaults = useCallback(() => {
-  const cfg: AutoPunchConfig = { orderCount: parseInt(numberOfOrders) || 0, stepSize: parseFloat(stepSize) || 0, tpPoints: parseFloat(takeProfit) || 0 };
+  const cfg: AutoPunchConfig = {
+    orderCount: parseInt(numberOfOrders) || 0,
+    stepSize: parseFloat(stepSize) || 0,
+    tpPoints: parseFloat(takeProfit) || 0,
+    stepSizeIncrement: Math.max(1, parseInt(stepSizeIncrement) || 2),
+  };
   setIsSavingDefaults(true);
   updateSettingsMut.mutate({ data: { autoPunchConfig: cfg } }, {
     onSuccess: () => {
@@ -701,7 +749,7 @@ export default function PlaceOrder() {
       toast({ title: "Failed to save defaults", description: err.message, variant: "destructive" });
     },
   });
-}, [numberOfOrders, stepSize, takeProfit, updateSettingsMut, toast, handleExecute]);
+}, [numberOfOrders, stepSize, takeProfit, stepSizeIncrement, updateSettingsMut, toast, handleExecute]);
 
 
 
@@ -831,6 +879,7 @@ export default function PlaceOrder() {
     else if (confirmState.type === "repunch_remove_selected") removeSlots(selectedSlots);
     else if (confirmState.type === "repunch_clear_all") setWatchedSlots([]);
     else if (confirmState.type === "save_and_place") handleSaveDefaults();
+    else if (confirmState.type === "double_qty_toggle") setDoubleQtyEnabled(confirmState.enabling);
   }, [confirmState, doExitPosition, doExitSelected, doExitAll, doCancelAll, doCancelSelected, handleCancelOrder, setSlotsStopped, removeSlot, removeSlots, selectedSlots, setWatchedSlots]);
 
   /* ── multi-order ── */
@@ -1060,29 +1109,45 @@ const insufficientMargin = requiredMargin != null && rawBalance != null && requi
   Limits every {stepSizeNum || "…"} pts {side === "BUY" ? "below" : "above"} entry · TP = limit {side === "BUY" ? "+" : "−"} {tpPointsNum || "…"} pts.
 </p>
 
-            {/* 6. Number of Orders */}
-            <div>
-  <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Number of Orders</label>
-  <input
-    className="w-full rounded-lg px-3 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
-    type="number" min="0" step="1" inputMode="numeric" value={numberOfOrders}
-    onChange={(e) => setNumberOfOrders(e.target.value)} placeholder="e.g. 6" />
-</div>
+            {/* 6. Number of Orders + Top/Bottom Out + Double Qty — single row */}
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Orders</label>
+                <input
+                  className="w-full rounded-lg px-2 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+                  type="number" min="0" step="1" inputMode="numeric" value={numberOfOrders}
+                  onChange={(e) => setNumberOfOrders(e.target.value)} placeholder="6" />
+              </div>
 
-            {/* Double Qty toggle — per-trade, default off */}
-            <button
-              type="button"
-              onClick={() => setDoubleQtyEnabled((v) => !v)}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition-all"
-              style={doubleQtyEnabled
-                ? { background: "hsl(258 82% 64% / 0.15)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.4)" }
-                : { background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border))" }}
-            >
-              <span>Double Qty — far half</span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold" style={{ background: doubleQtyEnabled ? "hsl(258 82% 64%)" : "hsl(var(--border))", color: doubleQtyEnabled ? "#fff" : "hsl(var(--muted-foreground))" }}>
-                {doubleQtyEnabled ? "ON" : "OFF"}
-              </span>
-            </button>
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">
+                  {side === "BUY" ? "Top Out" : "Bottom Out"}
+                </label>
+                <input
+                  className="w-full rounded-lg px-2 py-2 text-sm font-mono bg-input border border-border focus:outline-none focus:ring-1 focus:ring-ring transition-colors"
+                  type="number" min="1" step="1" inputMode="numeric" value={stepSizeIncrement}
+                  onChange={(e) => setStepSizeIncrement(e.target.value)} placeholder="2" />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Double Qty</label>
+                <button
+                  type="button"
+                  onClick={() => setConfirmState({ type: "double_qty_toggle", enabling: !doubleQtyEnabled })} 
+                  className="w-full flex items-center justify-center py-2 rounded-lg text-xs font-bold transition-all"
+                  style={doubleQtyEnabled
+                    ? { background: "hsl(258 82% 64% / 0.15)", color: "hsl(var(--primary))", border: "1px solid hsl(258 82% 64% / 0.4)" }
+                    : { background: "hsl(var(--muted))", color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border))" }}
+                >
+                  {doubleQtyEnabled ? "ON" : "OFF"}
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground -mt-1">
+              {stepSizeNum > 0 && stepSizeIncrement
+                ? `If price runs ${(stepSizeNum * Math.max(1, parseInt(stepSizeIncrement) || 0)).toFixed(2)} pts away with nothing live, the whole chain resets closer to market.`
+                : "If price runs far away with nothing live, the whole chain resets closer to market."}
+            </p>
 
             {/* 7. Buy Diff (step size) */}
             {/* 7 & 8. Buy Diff + Take Profit */}
