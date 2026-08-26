@@ -14,6 +14,12 @@ export interface OrderPayload {
   client_order_id?: string;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MAX_RETRIES = 3;
+
 export async function callCoinswitch(
   method: "GET" | "POST" | "DELETE",
   endpoint: string,
@@ -21,24 +27,45 @@ export async function callCoinswitch(
   secretKey: string,
   paramsOrBody: object = {},
 ): Promise<unknown> {
-  const { headers, path } = signRequest(
-    method,
-    endpoint,
-    method === "GET" ? paramsOrBody : {},
-    apiKey,
-    secretKey,
-  );
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Re-sign on every attempt — CoinSwitch's signature includes a
+    // timestamp, so a stale signature from the first attempt would be
+    // rejected on retry.
+    const { headers, path } = signRequest(
+      method,
+      endpoint,
+      method === "GET" ? paramsOrBody : {},
+      apiKey,
+      secretKey,
+    );
 
-  if (method === "GET") {
-    const response = await axios.get(`${BASE_URL}${path}`, { headers });
-    return response.data;
-  } else if (method === "DELETE") {
-    const response = await axios.delete(`${BASE_URL}${path}`, { headers, data: paramsOrBody });
-    return response.data;
-  } else {
-    const response = await axios.post(`${BASE_URL}${path}`, paramsOrBody, { headers });
-    return response.data;
+    try {
+      if (method === "GET") {
+        const response = await axios.get(`${BASE_URL}${path}`, { headers });
+        return response.data;
+      } else if (method === "DELETE") {
+        const response = await axios.delete(`${BASE_URL}${path}`, { headers, data: paramsOrBody });
+        return response.data;
+      } else {
+        const response = await axios.post(`${BASE_URL}${path}`, paramsOrBody, { headers });
+        return response.data;
+      }
+    } catch (err: unknown) {
+      const is429 = axios.isAxiosError(err) && err.response?.status === 429;
+      if (!is429 || attempt === MAX_RETRIES) throw err;
+
+      // Honor Retry-After if CoinSwitch sends one; otherwise exponential
+      // backoff with jitter (400ms, 800ms, 1600ms ± up to 150ms).
+      const retryAfterHeader = axios.isAxiosError(err) ? err.response?.headers?.["retry-after"] : undefined;
+      const retryAfterMs = retryAfterHeader ? parseFloat(retryAfterHeader) * 1000 : null;
+      const backoffMs = retryAfterMs ?? (400 * Math.pow(2, attempt) + Math.random() * 150);
+
+      console.warn(`[coinswitch] 429 on ${method} ${endpoint} — retrying in ${Math.round(backoffMs)}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(backoffMs);
+    }
   }
+  // Unreachable — loop always returns or throws — but keeps TS happy.
+  throw new Error(`callCoinswitch: exhausted retries for ${method} ${endpoint}`);
 }
 
 /**
@@ -177,4 +204,45 @@ export async function addMarginForAccount(
     symbol,
     margin,
   });
+}
+
+export interface OrderStatus {
+  order_id: string;
+  symbol: string;
+  side: "BUY" | "SELL";
+  status: string; // e.g. "OPEN" | "FILLED" | "CANCELLED" | "REJECTED" | "PARTIALLY_FILLED" | ...
+  order_type: string;
+  quantity: string;
+  exec_quantity: string;
+  price: string;
+  avg_execution_price: string;
+  reduce_only: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Ground-truth fill check for ONE specific order, by order_id — as opposed
+ * to inferring a fill from the account's aggregate open-position list
+ * (which is ambiguous whenever multiple ladder legs share the same
+ * symbol+side, since some OTHER leg's position can make a just-cancelled
+ * order look "filled"). Rate limit: 20 req/60s — only call this for an
+ * order that has already disappeared from the open-orders snapshot, never
+ * on every tick for every slot.
+ */
+export async function getOrderStatusForAccount(
+  account: { apiKey: string; secretKey: string },
+  orderId: string,
+): Promise<OrderStatus | null> {
+  const apiKey = decrypt(account.apiKey);
+  const secretKey = decrypt(account.secretKey);
+  try {
+    const data = (await callCoinswitch("GET", "/trade/api/v2/futures/order", apiKey, secretKey, {
+      order_id: orderId,
+    })) as { data: { order: OrderStatus } };
+    return data?.data?.order ?? null;
+  } catch (err) {
+    console.error(`[coinswitch] getOrderStatus failed for ${orderId}`, err);
+    return null;
+  }
 }
