@@ -16,7 +16,7 @@ declare global {
 const JWT_SECRET = process.env.SESSION_SECRET || process.env.JWT_SECRET || "change-me";
 
 export function generateToken(accountId: number): string {
-  return jwt.sign({ accountId }, JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign({ accountId }, JWT_SECRET, { expiresIn: "360d" });
 }
 
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {

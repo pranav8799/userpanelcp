@@ -1,10 +1,24 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ListOrdered, Briefcase, BarChart3, User, HistoryIcon } from "lucide-react";
+import { ListOrdered, Briefcase, BarChart3, User, HistoryIcon, Bell } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/auth-context";
 import { PriceTicker } from "@/components/layout/PriceTicker";
 import buySellIconImg from "@/assets/buy-sell-icon.png";
+
+const LAST_SEEN_KEY = "notifications:lastSeenAt";
+
+interface NotificationSummary {
+  id: number;
+  createdAt: string;
+}
+
+async function fetchNotifications(): Promise<NotificationSummary[]> {
+  const res = await fetch("/api/notifications", { credentials: "include" });
+  if (!res.ok) throw new Error("Failed to load notifications");
+  return res.json();
+}
 
 // Desktop sidebar nav — BUY / SELL first, then the rest
 const NAV_ITEMS = [
@@ -13,6 +27,7 @@ const NAV_ITEMS = [
   { href: "/positions", label: "Positions", icon: Briefcase },
   { href: "/history", label: "History", icon: HistoryIcon }, // ← new
   { href: "/reports", label: "Reports", icon: BarChart3 },
+  { href: "/notifications", label: "Notifications", icon: Bell }, // ← new
   { href: "/profile", label: "Profile", icon: User },
 ];
 
@@ -41,6 +56,29 @@ function BuySellLabel({ className }: { className?: string }) {
 export function Shell({ children }: { children: React.ReactNode }) {
   const { account, isLoading } = useAuth();
   const [location] = useLocation();
+  const [lastSeenAt, setLastSeenAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLastSeenAt(localStorage.getItem(LAST_SEEN_KEY));
+  }, []);
+
+  const { data: notifications } = useQuery({
+    queryKey: ["notifications", "unread-check"],
+    queryFn: fetchNotifications,
+    enabled: !!account,
+    refetchInterval: 60_000,
+  });
+
+  const latestNotificationAt = notifications?.[0]?.createdAt ?? null;
+  const hasUnread = !!latestNotificationAt && (!lastSeenAt || latestNotificationAt > lastSeenAt);
+
+  // Visiting the notifications page marks everything seen so far as read
+  useEffect(() => {
+    if (location === "/notifications" && latestNotificationAt) {
+      localStorage.setItem(LAST_SEEN_KEY, latestNotificationAt);
+      setLastSeenAt(latestNotificationAt);
+    }
+  }, [location, latestNotificationAt]);
 
   if (isLoading) {
     return <div className="min-h-screen bg-background flex items-center justify-center">Loading...</div>;
@@ -55,6 +93,24 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex flex-col h-[100dvh] w-full bg-background overflow-hidden text-foreground">
       {/* Price ticker strip — full width, above sidebar + content */}
       <PriceTicker />
+
+      {/* Mobile top bar with notification bell */}
+      <div className="lg:hidden flex items-center justify-between px-4 h-14 border-b bg-card/50 shrink-0">
+        <h1 className="text-base font-bold tracking-tight text-primary flex items-center gap-2">
+          <img src={buySellIconImg} alt="My Trade Study" className="w-7 h-7 rounded-md object-cover" />
+          My Trade Study
+        </h1>
+        <Link
+          href="/notifications"
+          aria-label="Notifications"
+          className="relative p-2 -mr-2 rounded-lg text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <Bell className="w-6 h-6" />
+          {hasUnread && (
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-destructive" />
+          )}
+        </Link>
+      </div>
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Desktop Sidebar */}
@@ -89,20 +145,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 );
               }
 
-              // Regular nav items (Orders, Positions, Reports, Profile)
+              // Regular nav items (Orders, Positions, Reports, Notifications, Profile)
               const Icon = item.icon;
+              const showDot = item.href === "/notifications" && hasUnread;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 relative",
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  <Icon className="w-5 h-5" />
+                  <span className="relative">
+                    <Icon className="w-5 h-5" />
+                    {showDot && (
+                      <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-destructive" />
+                    )}
+                  </span>
                   {item.label}
                 </Link>
               );

@@ -4,11 +4,13 @@ import {
   useGetPositions,
   useGetClosedOrders,
   useGetBalance,
+  useGetPnlSummary,
   getGetPositionsQueryKey,
   getGetBalanceQueryKey,
+  getGetPnlSummaryQueryKey,
   placeOrder,
 } from "@workspace/api-client-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +21,7 @@ import { RefreshCw, LayoutTemplate, InboxIcon, Search, X, SlidersHorizontal, Wal
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import History from "@/pages/history";
 import { format } from "date-fns";
 import {
   AlertDialog,
@@ -52,8 +55,9 @@ export default function Positions() {
   const { data, isLoading, isRefetching, refetch } = useGetPositions();
   const getClosedOrders = useGetClosedOrders();
   const { data: balance, isLoading: isBalanceLoading, isRefetching: isBalanceRefetching } = useGetBalance();
+  const { data: pnl, isLoading: isPnlLoading, isRefetching: isPnlRefetching } = useGetPnlSummary();
 
-  const [tab, setTab] = useState<"positions" | "closed">("positions");
+  const [tab, setTab] = useState<"positions" | "closed" | "history">("positions");
 
   const [filters, setFilters] = useState<PositionFilters>(DEFAULT_FILTERS);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -109,6 +113,7 @@ export default function Positions() {
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: getGetPositionsQueryKey() });
     queryClient.invalidateQueries({ queryKey: getGetBalanceQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetPnlSummaryQueryKey() });
     getClosedOrders.mutate({ data: {} });
   };
 
@@ -217,12 +222,22 @@ export default function Positions() {
         </div>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as "positions" | "closed")} className="flex-1 flex flex-col">
-        <TabsList className="w-full grid grid-cols-2">
+      <MarginSummary
+        positions={positions}
+        isPositionsLoading={isLoading}
+        totalBalance={balance?.totalBalance}
+        availableBalance={balance?.availableBalance}
+        isBalanceLoading={isBalanceLoading}
+        totalPnl={pnl?.totalPnl}
+        isPnlLoading={isPnlLoading}
+      />
+
+      <Tabs value={tab} onValueChange={(v) => setTab(v as "positions" | "closed" | "history")} className="flex-1 flex flex-col">
+        <TabsList className="w-full grid grid-cols-3 lg:grid-cols-2">
           <TabsTrigger value="positions">Positions ({positions.length})</TabsTrigger>
           <TabsTrigger value="closed">Closed Orders</TabsTrigger>
+          <TabsTrigger value="history" className="lg:hidden">History</TabsTrigger>
         </TabsList>
-
         <TabsContent value="positions" className="flex-1 mt-4 space-y-3">
           {/* Search + filters */}
           <div className="space-y-2">
@@ -444,6 +459,10 @@ export default function Positions() {
             emptyMessage={closedOrders.length === 0 ? "No closed orders" : "No orders match your filters"}
           />
         </TabsContent>
+
+        <TabsContent value="history" className="flex-1 mt-4 lg:hidden">
+          <History />
+        </TabsContent>
       </Tabs>
 
       <AlertDialog open={confirmMode !== null} onOpenChange={(open) => !open && !isBusy && setConfirmMode(null)}>
@@ -476,6 +495,76 @@ export default function Positions() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function MarginSummary({
+  positions,
+  isPositionsLoading,
+  totalBalance,
+  availableBalance,
+  isBalanceLoading,
+  totalPnl,
+  isPnlLoading,
+}: {
+  positions?: any[];
+  isPositionsLoading: boolean;
+  totalBalance?: string | null;
+  availableBalance?: string | null;
+  isBalanceLoading: boolean;
+  totalPnl?: number;
+  isPnlLoading: boolean;
+}) {
+  const usedMargin = React.useMemo(() => {
+    const list = positions ?? [];
+    return list.reduce((sum, p) => sum + Number(p.positionMargin ?? 0), 0);
+  }, [positions]);
+
+  const blockedMargin = React.useMemo(() => {
+    const total = Number(totalBalance ?? 0);
+    const available = Number(availableBalance ?? 0);
+    const lockedTotal = total - available;
+    return Math.max(0, lockedTotal - usedMargin);
+  }, [totalBalance, availableBalance, usedMargin]);
+
+  const isLoading = isPositionsLoading || isBalanceLoading;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">Margin & PnL</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Used</div>
+            {isLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className="text-sm font-semibold">{formatCurrency(usedMargin)}</div>
+            )}
+          </div>
+          <div className="border-x">
+            <div className="text-xs text-muted-foreground mb-1">Blocked</div>
+            {isLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className="text-sm font-semibold">{formatCurrency(blockedMargin)}</div>
+            )}
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground mb-1">Realized</div>
+            {isPnlLoading ? (
+              <Skeleton className="h-5 w-14 mx-auto" />
+            ) : (
+              <div className={`text-sm font-semibold ${totalPnl && totalPnl > 0 ? "text-profit" : totalPnl && totalPnl < 0 ? "text-loss" : ""}`}>
+                {formatPnl(totalPnl).formatted}
+              </div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

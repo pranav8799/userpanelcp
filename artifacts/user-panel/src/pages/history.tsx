@@ -6,21 +6,21 @@ import { useAuth } from "@/contexts/auth-context";
 import { RefreshCw, Search, X, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Filter } from "lucide-react";
 
 const EVENT_TYPE_OPTIONS: { value: HistoryEventInput["eventType"] | "ALL"; label: string }[] = [
-  { value: "ALL", label: "All Events" },
+  { value: "ALL", label: "All Status" },
   { value: "entry_placed", label: "Entry Placed" },
-  { value: "queued", label: "Queued" },
-  { value: "queued_activated", label: "Queued Activated" },
+//   { value: "queued", label: "Queued" },
+//   { value: "queued_activated", label: "Queued Activated" },
   { value: "entry_filled", label: "Entry Filled" },
   { value: "tp_filled", label: "TP Filled" },
   { value: "repunched", label: "Re-punched" },
-  { value: "shifted", label: "Shifted" },
-  { value: "demoted", label: "Demoted" },
-  { value: "trimmed", label: "Trimmed" },
-  { value: "rebalanced", label: "Rebalanced" },
-  { value: "stopped", label: "Stopped" },
-  { value: "resumed", label: "Resumed" },
-  { value: "removed_manual", label: "Removed (Manual)" },
-  { value: "ladder_reset", label: "Ladder Reset" },
+//   { value: "shifted", label: "Shifted" },
+//   { value: "demoted", label: "Demoted" },
+//   { value: "trimmed", label: "Trimmed" },
+//   { value: "rebalanced", label: "Rebalanced" },
+//   { value: "stopped", label: "Stopped" },
+//   { value: "resumed", label: "Resumed" },
+  { value: "removed_manual", label: "Cancel Manual  " },
+  { value: "ladder_reset", label: "Auto Shift" },
 ];
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
@@ -212,7 +212,7 @@ export default function History() {
                 { key: "createdAt" as const, label: "Time" },
                 { key: null, label: "Symbol" },
                 { key: null, label: "Side" },
-                { key: null, label: "Event" },
+                { key: null, label: "Status" },
                 { key: "limitPrice" as const, label: "Limit Price" },
                 { key: null, label: "TP Price" },
                 { key: "quantity" as const, label: "Qty" },

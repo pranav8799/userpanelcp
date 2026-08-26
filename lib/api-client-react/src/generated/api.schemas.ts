@@ -222,7 +222,8 @@ export type WatchedSlotStatus =
   | "pending_fill"
   | "placing_tp"
   | "watching"
-  | "repunching";
+  | "repunching"
+  | "tearing_down";
 
 export interface WatchedSlot {
   id: string;
