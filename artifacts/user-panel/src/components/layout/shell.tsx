@@ -1,24 +1,12 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Link, useLocation } from "wouter";
 import { ListOrdered, Briefcase, BarChart3, User, HistoryIcon, Bell } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/auth-context";
 import { PriceTicker } from "@/components/layout/PriceTicker";
+import { NotificationPopup } from "@/components/layout/NotificationPopup";
+import { useNotificationsUnread } from "@/hooks/use-notifications";
 import buySellIconImg from "@/assets/buy-sell-icon.png";
-
-const LAST_SEEN_KEY = "notifications:lastSeenAt";
-
-interface NotificationSummary {
-  id: number;
-  createdAt: string;
-}
-
-async function fetchNotifications(): Promise<NotificationSummary[]> {
-  const res = await fetch("/api/notifications", { credentials: "include" });
-  if (!res.ok) throw new Error("Failed to load notifications");
-  return res.json();
-}
 
 // Desktop sidebar nav — BUY / SELL first, then the rest
 const NAV_ITEMS = [
@@ -56,27 +44,13 @@ function BuySellLabel({ className }: { className?: string }) {
 export function Shell({ children }: { children: React.ReactNode }) {
   const { account, isLoading } = useAuth();
   const [location] = useLocation();
-  const [lastSeenAt, setLastSeenAt] = useState<string | null>(null);
 
-  useEffect(() => {
-    setLastSeenAt(localStorage.getItem(LAST_SEEN_KEY));
-  }, []);
-
-  const { data: notifications } = useQuery({
-    queryKey: ["notifications", "unread-check"],
-    queryFn: fetchNotifications,
-    enabled: !!account,
-    refetchInterval: 60_000,
-  });
-
-  const latestNotificationAt = notifications?.[0]?.createdAt ?? null;
-  const hasUnread = !!latestNotificationAt && (!lastSeenAt || latestNotificationAt > lastSeenAt);
+  const { latestNotificationAt, hasUnread, markSeen } = useNotificationsUnread(!!account);
 
   // Visiting the notifications page marks everything seen so far as read
-  useEffect(() => {
+  React.useEffect(() => {
     if (location === "/notifications" && latestNotificationAt) {
-      localStorage.setItem(LAST_SEEN_KEY, latestNotificationAt);
-      setLastSeenAt(latestNotificationAt);
+      markSeen(latestNotificationAt);
     }
   }, [location, latestNotificationAt]);
 
@@ -221,6 +195,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
           );
         })}
       </nav>
+
+      {/* Popup for new notifications — renders on every page except login/signup */}
+      <NotificationPopup />
     </div>
   );
 }
