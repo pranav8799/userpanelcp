@@ -19,7 +19,7 @@ function getErrorMessage(err: unknown, fallback: string): string {
 }
 
 async function requestJson<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, "")}${url}`, {
     method,
     headers: { "Content-Type": "application/json" },
     credentials: "include",

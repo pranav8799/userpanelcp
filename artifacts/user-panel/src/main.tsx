@@ -3,6 +3,6 @@ import { setBaseUrl } from '@workspace/api-client-react';
 import App from './App';
 import './index.css';
 
-setBaseUrl('/trade');
+setBaseUrl('/');
 
 createRoot(document.getElementById('root')!).render(<App />);
